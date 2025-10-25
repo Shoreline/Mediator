@@ -1,0 +1,9 @@
+# OpenAI API
+openai>=1.0.0
+
+# Async HTTP client (for Qwen/VSP providers)
+aiohttp>=3.9.0
+
+# Rate limiting (optional, for advanced rate control)
+aiolimiter>=1.1.0
+
