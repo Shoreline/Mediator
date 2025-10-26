@@ -14,7 +14,7 @@ class RunConfig:
     top_p: float = 1.0
     max_tokens: int = 2048
     seed: Optional[int] = 42
-    consumer_size: int = 4
+    consumer_size: int = 20  # 提高并发度，适合大数据集
     save_path: str = "experiments/mm_safety/output.jsonl"
     proxy: Optional[str] = None   # 若走代理，优先用环境变量
     rate_limit_qps: Optional[float] = None  # 简单速率限制（每秒请求数）
@@ -28,38 +28,60 @@ class Item:
     question: str
     image_path: str
 
-def load_mm_safety_items(json_files_pattern: str, image_base_path: str) -> Iterable[Item]:
+def load_mm_safety_items(
+    json_files_pattern: str, 
+    image_base_path: str,
+    image_type: str = "SD",
+    question_field: str = "Question"
+) -> Iterable[Item]:
     """
-    读取 MM-Safety-Bench 的 JSON 文件（jsonl 或 json）。
-    约定每条含 fields: index, category, question, image 相对路径 / 文件名。
-    你可按自己数据格式调整此函数。
+    读取 MM-SafetyBench 数据集。
+    
+    Args:
+        json_files_pattern: JSON 文件的 glob 模式（如 "~/code/MM-SafetyBench/data/processed_questions/*.json"）
+        image_base_path: 图片基础目录（如 "~/Downloads/MM-SafetyBench_imgs/"）
+        image_type: 图片类型 - "SD", "SD_TYPO", 或 "TYPO"
+        question_field: 问题字段 - "Question", "Rephrased Question", 或 "Rephrased Question(SD)"
+    
+    MM-SafetyBench 数据格式：
+        - JSON 文件名即为 category（如 "01-Illegal_Activitiy.json"）
+        - JSON 内容：{"0": {"Question": "...", ...}, "1": {...}, ...}
+        - 图片路径：{image_base_path}/{category}/{image_type}/{index}.jpg
+    
+    配对关系：
+        - SD        → Question
+        - SD_TYPO   → Rephrased Question
+        - TYPO      → Rephrased Question(SD)
     """
+    json_files_pattern = os.path.expanduser(json_files_pattern)
+    image_base_path = os.path.expanduser(image_base_path)
+    
     for fp in glob.glob(json_files_pattern):
+        # 从文件名提取 category（如 "01-Illegal_Activitiy"）
+        category = os.path.splitext(os.path.basename(fp))[0]
+        
         with open(fp, "r", encoding="utf-8") as f:
-            first_char = f.read(1)
-            f.seek(0)
-            if first_char == "{":
-                data = json.load(f)
-                rows = data if isinstance(data, list) else data.get("data", [])
-                for r in rows:
-                    yield Item(
-                        index=str(r["index"]),
-                        category=r["category"],
-                        question=r["question"],
-                        image_path=os.path.join(image_base_path, r["image"])
-                    )
-            else:
-                # jsonl
-                for line in f:
-                    if not line.strip():
-                        continue
-                    r = json.loads(line)
-                    yield Item(
-                        index=str(r["index"]),
-                        category=r["category"],
-                        question=r["question"],
-                        image_path=os.path.join(image_base_path, r["image"])
-                    )
+            data = json.load(f)
+            
+            # MM-SafetyBench 格式：{"0": {...}, "1": {...}}
+            for index, item_data in data.items():
+                # 提取问题文本
+                question = item_data.get(question_field, "")
+                
+                # 构建图片路径：image_base/category/image_type/index.jpg
+                image_path = os.path.join(
+                    image_base_path,
+                    category,
+                    image_type,
+                    f"{index}.jpg"
+                )
+                
+                yield Item(
+                    index=index,
+                    category=category,
+                    question=question,
+                    image_path=image_path
+                )
 
 def img_to_b64(path: str) -> str:
     with open(path, "rb") as f:
@@ -222,7 +244,7 @@ if __name__ == "__main__":
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--max_tokens", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--consumers", type=int, default=4)
+    parser.add_argument("--consumers", type=int, default=20)
     parser.add_argument("--proxy", default=None)
     args = parser.parse_args()
 
