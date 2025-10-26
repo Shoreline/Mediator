@@ -32,7 +32,7 @@ def load_mm_safety_items(
     json_files_pattern: str, 
     image_base_path: str,
     image_type: str = "SD",
-    question_field: str = "Question"
+    question_field: str = "Changed Question"
 ) -> Iterable[Item]:
     """
     读取 MM-SafetyBench 数据集。
@@ -41,7 +41,7 @@ def load_mm_safety_items(
         json_files_pattern: JSON 文件的 glob 模式（如 "~/code/MM-SafetyBench/data/processed_questions/*.json"）
         image_base_path: 图片基础目录（如 "~/Downloads/MM-SafetyBench_imgs/"）
         image_type: 图片类型 - "SD", "SD_TYPO", 或 "TYPO"
-        question_field: 问题字段 - "Question", "Rephrased Question", 或 "Rephrased Question(SD)"
+        question_field: 问题字段 - "Changed Question", "Rephrased Question", 或 "Rephrased Question(SD)"
     
     MM-SafetyBench 数据格式：
         - JSON 文件名即为 category（如 "01-Illegal_Activitiy.json"）
@@ -49,7 +49,7 @@ def load_mm_safety_items(
         - 图片路径：{image_base_path}/{category}/{image_type}/{index}.jpg
     
     配对关系：
-        - SD        → Question
+        - SD        → Changed Question
         - SD_TYPO   → Rephrased Question
         - TYPO      → Rephrased Question(SD)
     """
@@ -205,7 +205,7 @@ async def run_pipeline(
     cfg: RunConfig
 ):
     provider = get_provider(cfg)
-    items = load_mm_safety_items(json_files_pattern, image_base_path)
+    mmsb_items = load_mm_safety_items(json_files_pattern, image_base_path)
 
     q: asyncio.Queue = asyncio.Queue(maxsize=cfg.consumer_size * 2)
     rate_sem = None
@@ -216,7 +216,7 @@ async def run_pipeline(
         rate_sem = asyncio.Semaphore(int(cfg.rate_limit_qps))
         # 简化：不严格的 QPS 控制，已在 consumer 中使用 sem
 
-    prod = asyncio.create_task(producer(q, items, cfg=cfg))
+    prod = asyncio.create_task(producer(q, mmsb_items, cfg=cfg))
     cons = [
         asyncio.create_task(consumer(i, q, provider, cfg, rate_sem))
         for i in range(cfg.consumer_size)

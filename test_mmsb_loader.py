@@ -6,7 +6,7 @@
 📖 使用方法
 ============================================================
 
-1. 测试数据加载（使用 SD + Question，最常用的配对）
+1. 测试数据加载（使用 SD + Changed Question，最常用的配对）
    python test_mmsb_loader.py
 
 2. 测试不同的图片类型和问题字段配对
@@ -27,7 +27,7 @@
 ============================================================
 🔍 MM-SafetyBench 配对关系
 ============================================================
-- SD        → Question                    (原始问题)
+- SD        → Changed Question           (修改后的问题)
 - SD_TYPO   → Rephrased Question         (改写问题，引用图片底部)
 - TYPO      → Rephrased Question(SD)     (SD版本改写问题)
 
@@ -45,7 +45,7 @@ def test_load_data(
     json_pattern: str, 
     image_base: str, 
     image_type: str = "SD",
-    question_field: str = "Question",
+    question_field: str = "Changed Question",
     max_display: int = 5
 ):
     """
@@ -150,7 +150,7 @@ def test_mmsafety_pairing(
     通过调用 load_mm_safety_items() 三次来验证三种配对关系
     
     验证配对关系：
-    - SD → Question
+    - SD → Changed Question
     - SD_TYPO → Rephrased Question
     - TYPO → Rephrased Question(SD)
     
@@ -163,14 +163,14 @@ def test_mmsafety_pairing(
     print("🔍 MM-SafetyBench 配对关系验证（使用 load_mm_safety_items）")
     print("=" * 70)
     print("验证配对:")
-    print("  SD        → Question")
+    print("  SD        → Changed Question")
     print("  SD_TYPO   → Rephrased Question")
     print("  TYPO      → Rephrased Question(SD)")
     print()
     
     # 配对关系
     pairings = [
-        ("SD", "Question"),
+        ("SD", "Changed Question"),
         ("SD_TYPO", "Rephrased Question"),
         ("TYPO", "Rephrased Question(SD)")
     ]
@@ -279,8 +279,8 @@ if __name__ == "__main__":
                        choices=["SD", "SD_TYPO", "TYPO"],
                        help="图片类型")
     parser.add_argument("--question_field",
-                       default="Question",
-                       choices=["Question", "Rephrased Question", "Rephrased Question(SD)"],
+                       default="Changed Question",
+                       choices=["Changed Question", "Rephrased Question", "Rephrased Question(SD)"],
                        help="问题字段")
     parser.add_argument("--max_display", type=int, default=5,
                        help="最多显示多少条数据")
