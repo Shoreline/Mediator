@@ -12,10 +12,13 @@ Provider 测试脚本
 2. 指定图片测试
    python test_provider.py --image example/cars.jpg --question "How many cars are there?"
 
-3. 测试所有示例图片
+3. 测试所有示例图片（并发）
    python test_provider.py --all --question "Describe this image in detail"
 
-4. 使用不同的 Provider
+4. 测试所有图片（限制并发数，避免 API 限流）
+   python test_provider.py --all --question "Describe this" --max-concurrent 2
+
+5. 使用不同的 Provider
    # OpenAI (默认)
    python test_provider.py --provider openai --model gpt-4o --question "你看到了什么？"
    
@@ -25,10 +28,10 @@ Provider 测试脚本
    # VSP (需要先实现 VSPProvider)
    python test_provider.py --provider vsp --model vsp-model --question "Analyze this image"
 
-5. 调整温度参数
+6. 调整温度参数
    python test_provider.py --question "What's in the image?" --temp 0.7
 
-6. 查看帮助
+7. 查看帮助
    python test_provider.py --help
 
 ============================================================
@@ -36,6 +39,8 @@ Provider 测试脚本
 ============================================================
 - 灵活的问题输入：支持命令行直接输入问题
 - 多图片测试：可以测试单张或所有示例图片
+- 并发处理：使用 asyncio 并发测试多个图片，大幅提升速度
+- 并发控制：支持限制最大并发数，避免 API 限流
 - 预定义测试用例：内置了两个测试用例（小猫和汽车）
 - 清晰的输出格式：带有表情符号的友好输出
 - 错误处理：捕获并显示各种错误信息
@@ -172,16 +177,44 @@ async def test_provider(
         print(f"❌ 错误: {type(e).__name__}: {e}")
         return None
 
-async def test_all_images(provider_name: str, model_name: str, question: str):
+async def test_all_images(provider_name: str, model_name: str, question: str, max_concurrent: int = None):
     """
-    用同一个问题测试所有示例图片
+    用同一个问题并发测试所有示例图片
+    
+    Args:
+        provider_name: Provider 名称
+        model_name: 模型名称
+        question: 问题文本
+        max_concurrent: 最大并发数（None 表示不限制）
     """
-    print(f"\n🚀 开始批量测试所有图片")
+    if max_concurrent:
+        print(f"\n🚀 开始批量测试所有图片（并发模式，限制 {max_concurrent} 并发）")
+    else:
+        print(f"\n🚀 开始批量测试所有图片（并发模式，无限制）")
     print(f"Provider: {provider_name}, Model: {model_name}")
     print(f"问题: {question}\n")
     
-    for test_case in TEST_CASES:
-        await test_provider(provider_name, model_name, test_case, question)
+    if max_concurrent:
+        # 使用 Semaphore 限制并发数
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def test_with_limit(test_case):
+            async with semaphore:
+                return await test_provider(provider_name, model_name, test_case, question)
+        
+        tasks = [test_with_limit(test_case) for test_case in TEST_CASES]
+    else:
+        # 无限制并发
+        tasks = [
+            test_provider(provider_name, model_name, test_case, question)
+            for test_case in TEST_CASES
+        ]
+    
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # 统计结果
+    success_count = sum(1 for r in results if r is not None and not isinstance(r, Exception))
+    print(f"\n📊 测试完成: {success_count}/{len(TEST_CASES)} 成功")
 
 async def test_custom_image(
     provider_name: str,
@@ -217,6 +250,8 @@ async def main():
                        help="测试所有示例图片")
     parser.add_argument("--temp", type=float, default=0.0,
                        help="Temperature 参数")
+    parser.add_argument("--max-concurrent", type=int, default=None,
+                       help="最大并发数（仅用于 --all 模式，None=不限制）")
     
     args = parser.parse_args()
     
@@ -225,7 +260,7 @@ async def main():
         if not args.question:
             print("❌ 错误: 使用 --all 时必须提供 --question 参数")
             return
-        await test_all_images(args.provider, args.model, args.question)
+        await test_all_images(args.provider, args.model, args.question, args.max_concurrent)
     
     # 测试单张图片
     else:
