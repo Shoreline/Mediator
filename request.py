@@ -1,4 +1,38 @@
-import os, re, json, time, base64, glob, asyncio, random
+"""
+MM-SafetyBench 推理脚本
+
+使用示例：
+
+# 1. 测试 10 个样本（输出文件自动命名为：output/{model_name}_{timestamp}.jsonl）
+python request.py \
+  --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
+  --image_base "~/Downloads/MM-SafetyBench_imgs/" \
+  --max_tasks 10
+
+# 2. 测试 50 个样本，使用较少的并发，指定输出路径
+python request.py \
+  --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
+  --image_base "~/Downloads/MM-SafetyBench_imgs/" \
+  --max_tasks 50 \
+  --consumers 5 \
+  --save_path "test_output.jsonl"
+
+# 3. 处理全部数据（不指定 --max_tasks 和 --save_path）
+python request.py \
+  --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
+  --image_base "~/Downloads/MM-SafetyBench_imgs/"
+
+# 4. 使用不同的模型
+python request.py \
+  --provider openrouter \
+  --model_name "anthropic/claude-3.5-sonnet" \
+  --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
+  --image_base "~/Downloads/MM-SafetyBench_imgs/" \
+  --max_tasks 10
+"""
+
+import os, re, json, time, base64, glob, asyncio, random, contextlib
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, AsyncIterator, Iterable
 
@@ -13,11 +47,12 @@ class RunConfig:
     temperature: float = 0.0
     top_p: float = 1.0
     max_tokens: int = 2048
-    seed: Optional[int] = 42
+    seed: Optional[int] = None
     consumer_size: int = 20  # 提高并发度，适合大数据集
     save_path: str = "experiments/mm_safety/output.jsonl"
     proxy: Optional[str] = None   # 若走代理，优先用环境变量
     rate_limit_qps: Optional[float] = None  # 简单速率限制（每秒请求数）
+    max_tasks: Optional[int] = None  # 最大任务数（用于小批量测试，None 表示不限制）
 
 # ============ 数据与 Prompt ============
 
@@ -124,6 +159,19 @@ def format_pred_for_disk(answer_text: str) -> List[Dict[str, Any]]:
 
 def build_record_for_disk(item: Item, prompt_struct: Dict[str, Any], answer_text: str, cfg: RunConfig) -> Dict[str, Any]:
     # 与你之前的结构兼容，并额外保存 sent prompt
+    # 处理 prompt_parts：将 base64 图片替换为路径
+    prompt_parts_for_disk = []
+    for part in prompt_struct["parts"]:
+        if part.get("type") == "image":
+            # 不保存 base64，只保存图片路径
+            prompt_parts_for_disk.append({
+                "type": "image",
+                "image_path": item.image_path
+            })
+        else:
+            # 文本部分正常保存
+            prompt_parts_for_disk.append(part)
+    
     return {
         "index": str(item.index),
         "pred": format_pred_for_disk(answer_text),
@@ -134,7 +182,7 @@ def build_record_for_disk(item: Item, prompt_struct: Dict[str, Any], answer_text
             "image_path": item.image_path
         },
         "sent": {
-            "prompt_parts": prompt_struct["parts"]   # 这里等于保存了你发出去的文本与图片(b64)
+            "prompt_parts": prompt_parts_for_disk
         },
         "meta": {
             "model": cfg.model_name,
@@ -162,9 +210,19 @@ class Task:
     prompt_struct: Dict[str, Any]
 
 async def producer(q: asyncio.Queue, items: Iterable[Item], *, cfg: RunConfig):
+    count = 0
     for item in items:
+        # 如果设置了 max_tasks，检查是否已达到限制
+        if cfg.max_tasks is not None and count >= cfg.max_tasks:
+            print(f"✅ 已达到任务数量限制: {count}/{cfg.max_tasks}，停止生成任务")
+            break
+        
         prompt_struct = create_prompt(item)
         await q.put(Task(item=item, prompt_struct=prompt_struct))
+        count += 1
+    
+    print(f"📊 Producer 完成，共生成 {count} 个任务")
+    
     # 放入结束哨兵
     for _ in range(cfg.consumer_size):
         await q.put(None)
@@ -173,6 +231,7 @@ async def consumer(name: int, q: asyncio.Queue, provider: BaseProvider, cfg: Run
     while True:
         task = await q.get()
         if task is None:
+            q.task_done()  # 标记哨兵任务完成
             break
         item, prompt_struct = task.item, task.prompt_struct
 
@@ -222,31 +281,38 @@ async def run_pipeline(
         for i in range(cfg.consumer_size)
     ]
     await prod
-    await q.join()
-    for c in cons:
-        c.cancel()
-    # 等待消费者任务结束（取消）
-    with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.gather(*cons)
+    await q.join()  # 等待所有任务（包括哨兵）被处理完
+    await asyncio.gather(*cons)  # 等待所有 consumer 自然退出
 
 # ============ 入口（示例） ============
 
 if __name__ == "__main__":
-    import argparse, contextlib
+    import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", default="openai")  # openai / qwen / vsp
     parser.add_argument("--model_name", default="gpt-4o")
     parser.add_argument("--json_glob", required=True)
     parser.add_argument("--image_base", required=True)
-    parser.add_argument("--save_path", default="experiments/mm_safety/output.jsonl")
+    parser.add_argument("--save_path", default=None,
+                       help="输出路径（不指定则自动生成：output/{model_name}_{timestamp}.jsonl）")
     parser.add_argument("--temp", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--max_tokens", type=int, default=2048)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--consumers", type=int, default=20)
     parser.add_argument("--proxy", default=None)
+    parser.add_argument("--max_tasks", type=int, default=None,
+                       help="最大任务数（用于小批量测试，不指定则处理所有数据）")
     args = parser.parse_args()
+    
+    # 如果未指定 save_path，自动生成带时间戳的文件名
+    if args.save_path is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # 清理 model_name 中可能不适合文件名的字符
+        safe_model_name = re.sub(r'[^\w\-.]', '_', args.model_name)
+        args.save_path = f"output/{safe_model_name}_{timestamp}.jsonl"
+        print(f"📝 自动生成输出路径: {args.save_path}")
 
     cfg = RunConfig(
         provider=args.provider,
@@ -258,6 +324,7 @@ if __name__ == "__main__":
         consumer_size=args.consumers,
         save_path=args.save_path,
         proxy=args.proxy,
+        max_tasks=args.max_tasks,
     )
 
     asyncio.run(run_pipeline(
