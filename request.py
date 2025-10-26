@@ -214,26 +214,36 @@ async def producer(q: asyncio.Queue, items: Iterable[Item], *, cfg: RunConfig):
     for item in items:
         # 如果设置了 max_tasks，检查是否已达到限制
         if cfg.max_tasks is not None and count >= cfg.max_tasks:
-            print(f"✅ 已达到任务数量限制: {count}/{cfg.max_tasks}，停止生成任务")
             break
         
         prompt_struct = create_prompt(item)
         await q.put(Task(item=item, prompt_struct=prompt_struct))
         count += 1
     
-    print(f"📊 Producer 完成，共生成 {count} 个任务")
-    
     # 放入结束哨兵
     for _ in range(cfg.consumer_size):
         await q.put(None)
+    
+    return count  # 返回总任务数
 
-async def consumer(name: int, q: asyncio.Queue, provider: BaseProvider, cfg: RunConfig, rate_sem: Optional[asyncio.Semaphore]):
+async def consumer(
+    name: int, 
+    q: asyncio.Queue, 
+    provider: BaseProvider, 
+    cfg: RunConfig, 
+    rate_sem: Optional[asyncio.Semaphore],
+    progress_state: Dict[str, Any],
+    progress_lock: asyncio.Lock
+):
     while True:
         task = await q.get()
         if task is None:
             q.task_done()  # 标记哨兵任务完成
             break
         item, prompt_struct = task.item, task.prompt_struct
+
+        # 记录单个任务开始时间
+        task_start = time.time()
 
         # 简单的速率限制（全局 semaphore）；可替换为更复杂的令牌桶
         if rate_sem:
@@ -244,7 +254,46 @@ async def consumer(name: int, q: asyncio.Queue, provider: BaseProvider, cfg: Run
 
         record = build_record_for_disk(item, prompt_struct, answer, cfg)
         write_jsonl(cfg.save_path, [record])
+        
+        # 更新进度
+        task_duration = time.time() - task_start
+        async with progress_lock:
+            progress_state['completed'] += 1
+            progress_state['total_task_time'] += task_duration
+            completed = progress_state['completed']
+            total = progress_state['total']
+            total_elapsed = time.time() - progress_state['start_time']
+            avg_time = progress_state['total_task_time'] / completed
+            percent = (completed / total * 100) if total > 0 else 0
+            
+            # 计算预估剩余时间
+            if completed > 0:
+                eta = avg_time * (total - completed)
+                eta_str = format_time(eta)
+            else:
+                eta_str = "计算中..."
+            
+            # 打印进度
+            print(f"✅ [{completed}/{total}] {percent:.1f}% | "
+                  f"耗时: {format_time(total_elapsed)} | "
+                  f"平均: {avg_time:.2f}s/任务 | "
+                  f"本次: {task_duration:.2f}s | "
+                  f"预计剩余: {eta_str}")
+        
         q.task_done()
+
+def format_time(seconds: float) -> str:
+    """格式化时间显示"""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes}m{secs}s"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"{hours}h{minutes}m"
 
 async def send_with_retry(provider: BaseProvider, prompt_struct: Dict[str, Any], cfg: RunConfig, *, retries: int = 3) -> str:
     delay = 1.0
@@ -275,14 +324,52 @@ async def run_pipeline(
         rate_sem = asyncio.Semaphore(int(cfg.rate_limit_qps))
         # 简化：不严格的 QPS 控制，已在 consumer 中使用 sem
 
-    prod = asyncio.create_task(producer(q, mmsb_items, cfg=cfg))
+    # 启动 producer 并获取总任务数
+    start_time = time.time()
+    prod_task = asyncio.create_task(producer(q, mmsb_items, cfg=cfg))
+    total_tasks = await prod_task
+    
+    # 初始化进度追踪
+    progress_state = {
+        'completed': 0,
+        'total': total_tasks,
+        'start_time': start_time,
+        'total_task_time': 0.0  # 累计任务处理时间
+    }
+    progress_lock = asyncio.Lock()
+    
+    # 打印开始信息
+    print(f"\n{'='*80}")
+    print(f"🚀 开始处理任务")
+    print(f"{'='*80}")
+    print(f"总任务数: {total_tasks}")
+    print(f"并发数: {cfg.consumer_size}")
+    print(f"模型: {cfg.model_name}")
+    print(f"输出路径: {cfg.save_path}")
+    print(f"{'='*80}\n")
+    
+    # 启动 consumers
     cons = [
-        asyncio.create_task(consumer(i, q, provider, cfg, rate_sem))
+        asyncio.create_task(consumer(i, q, provider, cfg, rate_sem, progress_state, progress_lock))
         for i in range(cfg.consumer_size)
     ]
-    await prod
+    
     await q.join()  # 等待所有任务（包括哨兵）被处理完
     await asyncio.gather(*cons)  # 等待所有 consumer 自然退出
+    
+    # 打印完成统计
+    total_time = time.time() - start_time
+    avg_time = progress_state['total_task_time'] / total_tasks if total_tasks > 0 else 0
+    
+    print(f"\n{'='*80}")
+    print(f"🎉 所有任务完成！")
+    print(f"{'='*80}")
+    print(f"总任务数: {total_tasks}")
+    print(f"总耗时: {format_time(total_time)}")
+    print(f"平均每任务: {avg_time:.2f}s")
+    print(f"吞吐量: {total_tasks/total_time:.2f} 任务/秒")
+    print(f"输出文件: {cfg.save_path}")
+    print(f"{'='*80}\n")
 
 # ============ 入口（示例） ============
 
