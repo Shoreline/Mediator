@@ -9,9 +9,9 @@
 1. 测试数据加载（使用 SD + Changed Question，最常用的配对）
    python test_mmsb_loader.py
 
-2. 测试不同的图片类型和问题字段配对
-   python test_mmsb_loader.py --image_type SD_TYPO --question_field "Rephrased Question"
-   python test_mmsb_loader.py --image_type TYPO --question_field "Rephrased Question(SD)"
+2. 测试不同的图片类型（问题字段会自动匹配）
+   python test_mmsb_loader.py --image_type SD_TYPO
+   python test_mmsb_loader.py --image_type TYPO
 
 3. 显示更多样本
    python test_mmsb_loader.py --max_display 10
@@ -39,13 +39,12 @@ import sys
 import json
 import glob
 import random
-from request import load_mm_safety_items, Item
+from request import load_mm_safety_items, Item, MMSB_IMAGE_QUESTION_MAP
 
 def test_load_data(
     json_pattern: str, 
     image_base: str, 
     image_type: str = "SD",
-    question_field: str = "Changed Question",
     max_display: int = 5
 ):
     """
@@ -54,23 +53,25 @@ def test_load_data(
     Args:
         json_pattern: JSON 文件的 glob 模式
         image_base: 图片基础路径
-        image_type: 图片类型（SD/SD_TYPO/TYPO）
-        question_field: 问题字段
+        image_type: 图片类型（SD/SD_TYPO/TYPO），自动匹配对应的 question_field
         max_display: 最多显示多少条数据
     """
+    # 从映射表获取对应的 question_field
+    question_field = MMSB_IMAGE_QUESTION_MAP[image_type]
+    
     print("=" * 70)
     print("📦 测试 MM-SafetyBench 数据加载器")
     print("=" * 70)
     print(f"JSON 文件模式: {json_pattern}")
     print(f"图片基础路径: {image_base}")
     print(f"图片类型:     {image_type}")
-    print(f"问题字段:     {question_field}")
+    print(f"问题字段:     {question_field} (自动匹配)")
     print()
     
     try:
         # 加载数据
         print("⏳ 正在加载数据...")
-        items = list(load_mm_safety_items(json_pattern, image_base, image_type, question_field))
+        items = list(load_mm_safety_items(json_pattern, image_base, image_type))
         
         print(f"✅ 成功加载 {len(items)} 条数据\n")
         
@@ -180,7 +181,7 @@ def test_mmsafety_pairing(
         all_datasets = {}
         for img_type, question_field in pairings:
             print(f"⏳ 加载 {img_type} + {question_field}...")
-            items = list(load_mm_safety_items(json_pattern, image_base_dir, img_type, question_field))
+            items = list(load_mm_safety_items(json_pattern, image_base_dir, img_type))
             all_datasets[(img_type, question_field)] = items
             print(f"   ✅ 成功加载 {len(items)} 条数据")
         
@@ -277,11 +278,7 @@ if __name__ == "__main__":
     parser.add_argument("--image_type",
                        default="SD",
                        choices=["SD", "SD_TYPO", "TYPO"],
-                       help="图片类型")
-    parser.add_argument("--question_field",
-                       default="Changed Question",
-                       choices=["Changed Question", "Rephrased Question", "Rephrased Question(SD)"],
-                       help="问题字段")
+                       help="图片类型（问题字段会自动匹配）")
     parser.add_argument("--max_display", type=int, default=5,
                        help="最多显示多少条数据")
     parser.add_argument("--test_pairing", action="store_true",
@@ -304,7 +301,6 @@ if __name__ == "__main__":
             args.json_glob, 
             args.image_base,
             args.image_type,
-            args.question_field,
             args.max_display
         )
 
