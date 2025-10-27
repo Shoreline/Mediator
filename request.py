@@ -48,7 +48,7 @@ class RunConfig:
     top_p: float = 1.0
     max_tokens: int = 2048
     seed: Optional[int] = None
-    consumer_size: int = 20  # 提高并发度，适合大数据集
+    consumer_size: int = 10  # 并发数，OpenRouter等API建议使用较低值避免限流
     save_path: str = "output/output.jsonl"
     proxy: Optional[str] = None   # 若走代理，优先用环境变量
     rate_limit_qps: Optional[float] = None  # 简单速率限制（每秒请求数）
@@ -166,8 +166,15 @@ def load_mm_safety_by_image_types(
                 active_gens.remove(gen)
 
 def img_to_b64(path: str) -> str:
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
+    """将图片转换为base64编码，如果文件不存在则抛出详细错误"""
+    expanded_path = os.path.expanduser(path)
+    if not os.path.exists(expanded_path):
+        raise FileNotFoundError(f"图片文件不存在: {expanded_path}")
+    try:
+        with open(expanded_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+    except Exception as e:
+        raise IOError(f"读取图片文件失败 {expanded_path}: {e}")
 
 def create_prompt(item: Item, *, prompt_config: Optional[Dict]=None) -> Dict[str, Any]:
     """
@@ -259,14 +266,22 @@ class Task:
 
 async def producer(q: asyncio.Queue, items: Iterable[Item], *, cfg: RunConfig):
     count = 0
+    print(f"🔄 Producer 开始生成任务...")
     for item in items:
         # 如果设置了 max_tasks，检查是否已达到限制
         if cfg.max_tasks is not None and count >= cfg.max_tasks:
             break
         
+        if count == 0:
+            print(f"🔄 正在处理第1个任务: {item.category}/{item.index}")
+        elif count % 20 == 0:
+            print(f"🔄 已生成 {count} 个任务...")
+        
         prompt_struct = create_prompt(item)
         await q.put(Task(item=item, prompt_struct=prompt_struct))
         count += 1
+    
+    print(f"✅ Producer 完成，共生成 {count} 个任务")
     
     # 放入结束哨兵
     for _ in range(cfg.consumer_size):
@@ -299,6 +314,9 @@ async def consumer(
                 answer = await send_with_retry(provider, prompt_struct, cfg)
         else:
             answer = await send_with_retry(provider, prompt_struct, cfg)
+        
+        # 添加请求间隔，避免API限流（特别是OpenRouter等第三方API）
+        await asyncio.sleep(0.1 + random.random() * 0.2)
 
         record = build_record_for_disk(item, prompt_struct, answer, cfg)
         write_jsonl(cfg.save_path, [record])
@@ -347,10 +365,22 @@ async def send_with_retry(provider: BaseProvider, prompt_struct: Dict[str, Any],
     delay = 1.0
     for i in range(retries):
         try:
-            return await provider.send(prompt_struct, cfg)
+            # 添加超时保护（120秒）
+            return await asyncio.wait_for(
+                provider.send(prompt_struct, cfg),
+                timeout=120.0
+            )
+        except asyncio.TimeoutError:
+            error_msg = f"[ERROR] API调用超时（120秒）"
+            if i == retries - 1:
+                return error_msg
+            print(f"⚠️  超时，重试中... ({i+1}/{retries})")
+            await asyncio.sleep(delay + random.random() * 0.2)
+            delay *= 2
         except Exception as e:
             if i == retries - 1:
                 return f"[ERROR] {type(e).__name__}: {e}"
+            print(f"⚠️  错误: {type(e).__name__}, 重试中... ({i+1}/{retries})")
             await asyncio.sleep(delay + random.random() * 0.2)
             delay *= 2
     return "[ERROR] unreachable"
@@ -386,7 +416,7 @@ async def run_pipeline(
         categories
     )
 
-    q: asyncio.Queue = asyncio.Queue(maxsize=cfg.consumer_size * 2)
+    q: asyncio.Queue = asyncio.Queue()  # 移除 maxsize 限制，避免死锁
     rate_sem = None
     if cfg.rate_limit_qps and cfg.rate_limit_qps > 0:
         # 简单实现：每个请求持有 1/cfg.rate_limit_qps 秒的许可
@@ -395,19 +425,30 @@ async def run_pipeline(
         rate_sem = asyncio.Semaphore(int(cfg.rate_limit_qps))
         # 简化：不严格的 QPS 控制，已在 consumer 中使用 sem
 
-    # 启动 producer 并获取总任务数
     start_time = time.time()
-    prod_task = asyncio.create_task(producer(q, mmsb_items, cfg=cfg))
-    total_tasks = await prod_task
     
-    # 初始化进度追踪
+    # 初始化进度追踪（暂时不知道总数）
     progress_state = {
         'completed': 0,
-        'total': total_tasks,
+        'total': 0,  # 先设为 0，producer 完成后会更新
         'start_time': start_time,
         'total_task_time': 0.0  # 累计任务处理时间
     }
     progress_lock = asyncio.Lock()
+    
+    # 同时启动 producer 和 consumers，避免死锁
+    prod_task = asyncio.create_task(producer(q, mmsb_items, cfg=cfg))
+    cons = [
+        asyncio.create_task(consumer(i, q, provider, cfg, rate_sem, progress_state, progress_lock))
+        for i in range(cfg.consumer_size)
+    ]
+    
+    # 等待 producer 完成，获取总任务数
+    total_tasks = await prod_task
+    
+    # 更新总任务数
+    async with progress_lock:
+        progress_state['total'] = total_tasks
     
     # 打印开始信息
     print(f"\n{'='*80}")
@@ -418,12 +459,6 @@ async def run_pipeline(
     print(f"模型: {cfg.model_name}")
     print(f"输出路径: {cfg.save_path}")
     print(f"{'='*80}\n")
-    
-    # 启动 consumers
-    cons = [
-        asyncio.create_task(consumer(i, q, provider, cfg, rate_sem, progress_state, progress_lock))
-        for i in range(cfg.consumer_size)
-    ]
     
     await q.join()  # 等待所有任务（包括哨兵）被处理完
     await asyncio.gather(*cons)  # 等待所有 consumer 自然退出
@@ -458,11 +493,12 @@ if __name__ == "__main__":
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--max_tokens", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--consumers", type=int, default=20)
+    parser.add_argument("--consumers", type=int, default=10,
+                       help="并发消费者数量。默认: 10。OpenRouter等API建议使用较低值（3-5）避免限流")
     parser.add_argument("--proxy", default=None)
     parser.add_argument("--max_tasks", type=int, default=None,
                        help="最大任务数（用于小批量测试，不指定则处理所有数据）")
-    
+
     # MM-SafetyBench 图片类型选择
     parser.add_argument("--image_types", nargs='+', default=["SD"],
                        choices=["SD", "SD_TYPO", "TYPO"],
