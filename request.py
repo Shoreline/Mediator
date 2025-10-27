@@ -49,7 +49,7 @@ class RunConfig:
     max_tokens: int = 2048
     seed: Optional[int] = None
     consumer_size: int = 20  # 提高并发度，适合大数据集
-    save_path: str = "experiments/mm_safety/output.jsonl"
+    save_path: str = "output/output.jsonl"
     proxy: Optional[str] = None   # 若走代理，优先用环境变量
     rate_limit_qps: Optional[float] = None  # 简单速率限制（每秒请求数）
     max_tasks: Optional[int] = None  # 最大任务数（用于小批量测试，None 表示不限制）
@@ -74,7 +74,8 @@ class Item:
 def load_mm_safety_items(
     json_files_pattern: str, 
     image_base_path: str,
-    image_type: str = "SD"
+    image_type: str = "SD",
+    categories: List[str] = None
 ) -> Iterable[Item]:
     """
     读取 MM-SafetyBench 数据集。
@@ -83,6 +84,7 @@ def load_mm_safety_items(
         json_files_pattern: JSON 文件的 glob 模式（如 "~/code/MM-SafetyBench/data/processed_questions/*.json"）
         image_base_path: 图片基础目录（如 "~/Downloads/MM-SafetyBench_imgs/"）
         image_type: 图片类型 - "SD", "SD_TYPO", 或 "TYPO"
+        categories: 要加载的类别列表，None 或空列表表示加载所有类别
     
     MM-SafetyBench 数据格式：
         - JSON 文件名即为 category（如 "01-Illegal_Activitiy.json"）
@@ -97,6 +99,10 @@ def load_mm_safety_items(
     for fp in glob.glob(json_files_pattern):
         # 从文件名提取 category（如 "01-Illegal_Activitiy"）
         category = os.path.splitext(os.path.basename(fp))[0]
+        
+        # 如果指定了 categories，只处理在列表中的类别
+        if categories and category not in categories:
+            continue
         
         with open(fp, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -125,7 +131,8 @@ def load_mm_safety_items(
 def load_mm_safety_by_image_types(
     json_files_pattern: str,
     image_base_path: str,
-    image_types: List[str]
+    image_types: List[str],
+    categories: List[str] = None
 ) -> Iterable[Item]:
     """
     根据指定的图片类型列表加载 MM-SafetyBench 数据（交错加载）。
@@ -137,13 +144,14 @@ def load_mm_safety_by_image_types(
         json_files_pattern: JSON 文件的 glob 模式
         image_base_path: 图片基础目录
         image_types: 图片类型列表，如 ["SD", "TYPO"]
+        categories: 要加载的类别列表，None 或空列表表示加载所有类别
     
     Returns:
         所有指定图片类型的 Item 迭代器（交错顺序）
     """
     # 为每个 image_type 创建生成器
     generators = [
-        load_mm_safety_items(json_files_pattern, image_base_path, img_type)
+        load_mm_safety_items(json_files_pattern, image_base_path, img_type, categories)
         for img_type in image_types
     ]
     
@@ -351,7 +359,8 @@ async def run_pipeline(
     json_files_pattern: str,
     image_base_path: str,
     cfg: RunConfig,
-    image_types: List[str] = None
+    image_types: List[str] = None,
+    categories: List[str] = None
 ):
     if image_types is None:
         image_types = ["SD"]
@@ -364,11 +373,17 @@ async def run_pipeline(
         question_field = MMSB_IMAGE_QUESTION_MAP[img_type]
         print(f"   - {img_type} → {question_field}")
     
+    if categories:
+        print(f"📁 仅处理类别: {', '.join(categories)}")
+    else:
+        print(f"📁 处理所有类别")
+    
     # 加载数据
     mmsb_items = load_mm_safety_by_image_types(
         json_files_pattern,
         image_base_path,
-        image_types
+        image_types,
+        categories
     )
 
     q: asyncio.Queue = asyncio.Queue(maxsize=cfg.consumer_size * 2)
@@ -453,6 +468,10 @@ if __name__ == "__main__":
                        choices=["SD", "SD_TYPO", "TYPO"],
                        help="要处理的图片类型，可指定多个。默认: SD")
     
+    # MM-SafetyBench 类别过滤
+    parser.add_argument("--categories", nargs='+', default=None,
+                       help="要处理的类别，可指定多个。例如: --categories 08-Political_Lobbying 12-Health_Consultation。不指定则处理所有类别")
+    
     args = parser.parse_args()
     
     # 验证 image_types 必须在 MMSB_IMAGE_QUESTION_MAP 中
@@ -487,5 +506,6 @@ if __name__ == "__main__":
         json_files_pattern=args.json_glob,
         image_base_path=args.image_base,
         cfg=cfg,
-        image_types=args.image_types
+        image_types=args.image_types,
+        categories=args.categories
     ))
