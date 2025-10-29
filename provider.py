@@ -1,6 +1,13 @@
 import os
+import json
+import tempfile
+import shutil
+import subprocess
+import asyncio
+import time
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
+from pathlib import Path
 
 # ============ Provider 接口与实现 ============
 
@@ -106,15 +113,208 @@ class QwenProvider(BaseProvider):
 
 class VSPProvider(BaseProvider):
     """
-    VSP(VisualSketchpad) 占位：通常走 HTTP API。
+    VSP(VisualSketchpad) Provider: 通过子进程调用本地VSP工具
     """
-    def __init__(self, endpoint: str):
-        self.endpoint = endpoint
-
+    def __init__(self, vsp_path: str = "/Users/yuantian/code/VisualSketchpad", 
+                 output_dir: str = "output/vsp_details"):
+        self.vsp_path = vsp_path
+        self.agent_path = os.path.join(vsp_path, "agent")
+        self.output_dir = output_dir  # VSP详细输出保存目录
+        os.makedirs(self.output_dir, exist_ok=True)
+        
     async def send(self, prompt_struct: Dict[str, Any], cfg: 'RunConfig') -> str:
-        # TODO: 使用 aiohttp.post(self.endpoint, json=...) 调 VSP
-        # 根据 VSP 的返回格式，抽取纯文本答案（或你需要的字段）
-        raise NotImplementedError("Fill VSPProvider.send with your VSP call")
+        """
+        调用VSP工具处理多模态任务
+        
+        Args:
+            prompt_struct: 包含文本和图片的结构化prompt
+            cfg: 运行配置
+            
+        Returns:
+            str: VSP的最终答案
+        """
+        import time
+        
+        # 为这个任务创建唯一的目录结构（保存到Mediator的output下）
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        task_id = f"vsp_{timestamp}_{id(prompt_struct) % 10000}"
+        task_base_dir = os.path.abspath(os.path.join(self.output_dir, task_id))
+        os.makedirs(task_base_dir, exist_ok=True)
+        
+        # 创建独立的input和output目录
+        vsp_input_dir = os.path.join(task_base_dir, "task_input")  # VSP的输入
+        vsp_output_dir = os.path.join(task_base_dir, "task_output")  # VSP的输出
+        os.makedirs(vsp_input_dir, exist_ok=True)
+        os.makedirs(vsp_output_dir, exist_ok=True)
+        
+        # 确定任务类型
+        task_type = self._determine_task_type(prompt_struct)
+
+        # 构建VSP任务输入（根据任务类型写入对应的文件格式）
+        task_data = self._build_vsp_task(prompt_struct, vsp_input_dir, task_type)
+        
+        # 调用VSP（输出保存到vsp_output_dir）
+        result = await self._call_vsp(vsp_input_dir, vsp_output_dir, task_type)
+        
+        # 提取答案
+        answer = self._extract_answer(result)
+        
+        # 保存完整的VSP输出信息（供后续分析）
+        self._save_vsp_metadata(task_base_dir, prompt_struct, task_data, result, answer)
+        
+        return answer
+    
+    def _build_vsp_task(self, prompt_struct: Dict[str, Any], task_dir: str, task_type: str) -> Dict[str, Any]:
+        """构建VSP任务输入文件（vision任务的request.json格式）"""
+        import base64
+        
+        # 提取文本内容和图片
+        text_content = ""
+        images = []
+        
+        for part in prompt_struct.get("parts", []):
+            if part["type"] == "text":
+                text_content += part["text"] + "\n"
+            elif part["type"] == "image":
+                images.append(part)
+        
+        text_content = text_content.strip()
+
+        # 构建vision任务的request.json（使用绝对路径）
+        task_data = {"query": text_content, "images": []}
+        
+        for i, img_part in enumerate(images):
+            if img_part.get("type") == "image":
+                b64_data = img_part.get("b64", "")
+                if not b64_data:
+                    continue
+                # 直接解码base64并写入文件，不需要PIL
+                image_data = base64.b64decode(b64_data)
+                image_path = os.path.join(task_dir, f"image_{i}.jpg")
+                with open(image_path, "wb") as f:
+                    f.write(image_data)
+                # 使用绝对路径（VSP支持绝对路径）
+                task_data["images"].append(os.path.abspath(image_path))
+        
+        with open(os.path.join(task_dir, "request.json"), "w") as f:
+            json.dump(task_data, f, indent=2)
+            
+        return task_data
+    
+    def _determine_task_type(self, prompt_struct: Dict[str, Any]) -> str:
+        """确定任务类型，目前只支持vision"""
+        return "vision"
+    
+    async def _call_vsp(self, task_dir: str, output_dir: str, task_type: str) -> Dict[str, Any]:
+        """调用VSP工具（使用VSP自带python解释器 + run_agent 入口）"""
+
+        # 使用相对路径的python（让shell找VSP venv的python）
+        # 通过 -c 调用 run_agent，使用f-string直接嵌入参数
+        py_cmd = f'from main import run_agent; run_agent("{task_dir}", "{output_dir}", task_type="{task_type}")'
+        cmd = ["python", "-c", py_cmd]
+
+        # 设置工作目录为 VSP 的 agent 目录，确保 imports 正确
+        env = os.environ.copy()
+        env["PYTHONPATH"] = self.agent_path
+        # 激活VSP的venv
+        vsp_python_bin = os.path.join(self.vsp_path, "sketchpad_env", "bin")
+        env["PATH"] = f"{vsp_python_bin}:{env.get('PATH', '')}"
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=self.agent_path,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            
+            stdout_str = stdout.decode('utf-8', errors='ignore')
+            stderr_str = stderr.decode('utf-8', errors='ignore')
+
+            # 保存VSP的stdout和stderr用于调试
+            debug_file = os.path.join(output_dir, "vsp_debug.log")
+            with open(debug_file, "w") as f:
+                f.write(f"=== VSP EXECUTION DEBUG ===\n")
+                f.write(f"Return code: {process.returncode}\n")
+                f.write(f"Command: {' '.join(cmd)}\n")
+                f.write(f"\n=== STDOUT ===\n{stdout_str}\n")
+                f.write(f"\n=== STDERR ===\n{stderr_str}\n")
+
+            if process.returncode != 0:
+                # 即使失败，也尝试读取部分输出
+                output_file = os.path.join(output_dir, os.path.basename(task_dir), "output.json")
+                if os.path.exists(output_file):
+                    print(f"Warning: VSP failed but output.json exists, attempting to read...")
+                    with open(output_file, "r") as f:
+                        return json.load(f)
+                
+                raise RuntimeError(
+                    f"VSP execution failed (code {process.returncode}). "
+                    f"Check debug log: {debug_file}\n"
+                    f"STDERR preview: {stderr_str[:500]}"
+                )
+
+            # 读取输出结果
+            output_file = os.path.join(output_dir, os.path.basename(task_dir), "output.json")
+            if os.path.exists(output_file):
+                with open(output_file, "r") as f:
+                    return json.load(f)
+            else:
+                raise RuntimeError(f"VSP output file not found: {output_file}")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to call VSP: {str(e)}")
+    
+    def _save_vsp_metadata(self, output_dir: str, prompt_struct: Dict[str, Any], 
+                           task_data: Dict[str, Any], vsp_result: Dict[str, Any], 
+                           answer: str) -> None:
+        """保存VSP执行的元数据，方便后续分析"""
+        metadata = {
+            "prompt_struct": prompt_struct,
+            "task_data": task_data,
+            "vsp_result": vsp_result,
+            "extracted_answer": answer,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        metadata_file = os.path.join(output_dir, "mediator_metadata.json")
+        with open(metadata_file, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+    
+    def _extract_answer(self, result: Dict[str, Any]) -> str:
+        """从VSP结果中提取最终答案"""
+        if isinstance(result, dict) and "error" in result:
+            return f"VSP Error: {result['error']}"
+        
+        # 尝试从对话历史中提取答案
+        if isinstance(result, list):
+            for message in reversed(result):
+                if isinstance(message, dict) and "content" in message:
+                    content = message["content"]
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and "text" in item:
+                                text = item["text"]
+                                if "ANSWER:" in text and "TERMINATE" in text:
+                                    # 提取ANSWER: 和 TERMINATE 之间的内容
+                                    start = text.find("ANSWER:") + 7
+                                    end = text.find("TERMINATE")
+                                    if start > 6 and end > start:
+                                        return text[start:end].strip()
+        
+        # 如果没有找到标准答案格式，返回最后一条消息
+        if isinstance(result, list) and result:
+            last_message = result[-1]
+            if isinstance(last_message, dict) and "content" in last_message:
+                content = last_message["content"]
+                if isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and "text" in item:
+                            return item["text"]
+        
+        return "VSP completed but no clear answer found"
 
 def get_provider(cfg: 'RunConfig') -> BaseProvider:
     if cfg.proxy:
@@ -129,7 +329,10 @@ def get_provider(cfg: 'RunConfig') -> BaseProvider:
         return QwenProvider(endpoint=os.environ.get("QWEN_ENDPOINT","http://127.0.0.1:8000"),
                             api_key=os.environ.get("QWEN_API_KEY"))
     elif cfg.provider == "vsp":
-        return VSPProvider(endpoint=os.environ.get("VSP_ENDPOINT","http://127.0.0.1:9000"))
+        return VSPProvider(
+            vsp_path=os.environ.get("VSP_PATH", "/Users/yuantian/code/VisualSketchpad"),
+            output_dir=os.environ.get("VSP_OUTPUT_DIR", "output/vsp_details")
+        )
     else:
         raise ValueError(f"Unknown provider: {cfg.provider}")
 
