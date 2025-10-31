@@ -176,9 +176,9 @@ def img_to_b64(path: str) -> str:
     except Exception as e:
         raise IOError(f"读取图片文件失败 {expanded_path}: {e}")
 
-def create_prompt(item: Item, *, prompt_config: Optional[Dict]=None) -> Dict[str, Any]:
+def create_prompt(item: Item, *, prompt_config: Optional[Dict]=None, provider: str = None) -> Dict[str, Any]:
     """
-    生成“图文相间”的 prompt 结构（统一中间格式给 Provider）。
+    生成"图文相间"的 prompt 结构（统一中间格式给 Provider）。
     返回结构:
       {
         "parts": [ {"type":"text","text":...}, {"type":"image","b64":...}, ... ],
@@ -196,7 +196,14 @@ def create_prompt(item: Item, *, prompt_config: Optional[Dict]=None) -> Dict[str
     # 一图示例；如果条目有多图，你可以在 load 处扩展成列表再 append 多次
     parts.append({"type": "image", "b64": img_to_b64(item.image_path)})
 
-    return {"parts": parts, "meta": {"category": item.category}}
+    # 构建 meta 信息
+    meta = {"category": item.category}
+    
+    # VSP provider 需要额外的 index 信息
+    if provider == "vsp":
+        meta["index"] = item.index
+    
+    return {"parts": parts, "meta": meta}
 
 # ============ 统一落盘（保存发送的prompt + 收到的结果） ============
 
@@ -277,7 +284,7 @@ async def producer(q: asyncio.Queue, items: Iterable[Item], *, cfg: RunConfig):
         elif count % 20 == 0:
             print(f"🔄 已生成 {count} 个任务...")
         
-        prompt_struct = create_prompt(item)
+        prompt_struct = create_prompt(item, provider=cfg.provider)
         await q.put(Task(item=item, prompt_struct=prompt_struct))
         count += 1
     
@@ -394,6 +401,11 @@ async def run_pipeline(
 ):
     if image_types is None:
         image_types = ["SD"]
+    
+    # 如果使用 VSP，生成批量时间戳
+    if cfg.provider == "vsp":
+        cfg.vsp_batch_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        print(f"🔧 VSP 时间戳: {cfg.vsp_batch_timestamp}")
     
     provider = get_provider(cfg)
     
@@ -521,8 +533,12 @@ if __name__ == "__main__":
     if args.save_path is None:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # 清理 model_name 中可能不适合文件名的字符
-        safe_model_name = re.sub(r'[^\w\-.]', '_', args.model_name)
-        args.save_path = f"output/{safe_model_name}_{timestamp}.jsonl"
+        if args.provider == "vsp":
+            # VSP 使用 provider 名称作为前缀
+            args.save_path = f"output/vsp_{timestamp}.jsonl"
+        else:
+            safe_model_name = re.sub(r'[^\w\-.]', '_', args.model_name)
+            args.save_path = f"output/{safe_model_name}_{timestamp}.jsonl"
         print(f"📝 自动生成输出路径: {args.save_path}")
 
     cfg = RunConfig(

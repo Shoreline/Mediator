@@ -114,12 +114,19 @@ class QwenProvider(BaseProvider):
 class VSPProvider(BaseProvider):
     """
     VSP(VisualSketchpad) Provider: 通过子进程调用本地VSP工具
+    
+    目录结构：vsp_timestamp/category/index/
+    - vsp_timestamp: 本次运行的时间戳（所有任务共享）
+    - category: 任务类别（从 prompt_struct["meta"]["category"] 获取）
+    - index: 任务编号（从 prompt_struct["meta"]["index"] 获取）
     """
     def __init__(self, vsp_path: str = "/Users/yuantian/code/VisualSketchpad", 
-                 output_dir: str = "output/vsp_details"):
+                 output_dir: str = "output/vsp_details",
+                 batch_timestamp: str = None):
         self.vsp_path = vsp_path
         self.agent_path = os.path.join(vsp_path, "agent")
         self.output_dir = output_dir  # VSP详细输出保存目录
+        self.batch_timestamp = batch_timestamp  # 批量处理的时间戳
         os.makedirs(self.output_dir, exist_ok=True)
         
     async def send(self, prompt_struct: Dict[str, Any], cfg: 'RunConfig') -> str:
@@ -128,6 +135,7 @@ class VSPProvider(BaseProvider):
         
         Args:
             prompt_struct: 包含文本和图片的结构化prompt
+                - prompt_struct["meta"] 需包含 "category" 和 "index"
             cfg: 运行配置
             
         Returns:
@@ -135,15 +143,22 @@ class VSPProvider(BaseProvider):
         """
         import time
         
-        # 为这个任务创建唯一的目录结构（保存到Mediator的output下）
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        task_id = f"vsp_{timestamp}_{id(prompt_struct) % 10000}"
-        task_base_dir = os.path.abspath(os.path.join(self.output_dir, task_id))
+        # 统一使用批量模式：vsp_timestamp/category/index/
+        if not self.batch_timestamp:
+            raise ValueError("VSPProvider requires batch_timestamp")
+        
+        meta = prompt_struct.get("meta", {})
+        category = meta.get("category", "unknown")
+        index = meta.get("index", str(id(prompt_struct) % 10000))
+        
+        # 构建路径：output/vsp_details/vsp_2025-10-30_23-45-12/category/index/
+        batch_root = os.path.join(self.output_dir, f"vsp_{self.batch_timestamp}")
+        task_base_dir = os.path.abspath(os.path.join(batch_root, category, index))
         os.makedirs(task_base_dir, exist_ok=True)
         
         # 创建独立的input和output目录
-        vsp_input_dir = os.path.join(task_base_dir, "task_input")  # VSP的输入
-        vsp_output_dir = os.path.join(task_base_dir, "task_output")  # VSP的输出
+        vsp_input_dir = os.path.join(task_base_dir, "input")  # VSP的输入
+        vsp_output_dir = os.path.join(task_base_dir, "output")  # VSP的输出
         os.makedirs(vsp_input_dir, exist_ok=True)
         os.makedirs(vsp_output_dir, exist_ok=True)
         
@@ -156,8 +171,8 @@ class VSPProvider(BaseProvider):
         # 调用VSP（输出保存到vsp_output_dir）
         result = await self._call_vsp(vsp_input_dir, vsp_output_dir, task_type)
         
-        # 提取答案
-        answer = self._extract_answer(result)
+        # 从 debug log 中提取答案（VSP 专用方法）
+        answer = self._extract_answer_vsp(vsp_output_dir)
         
         # 保存完整的VSP输出信息（供后续分析）
         self._save_vsp_metadata(task_base_dir, prompt_struct, task_data, result, answer)
@@ -283,38 +298,56 @@ class VSPProvider(BaseProvider):
         with open(metadata_file, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
     
-    def _extract_answer(self, result: Dict[str, Any]) -> str:
-        """从VSP结果中提取最终答案"""
-        if isinstance(result, dict) and "error" in result:
-            return f"VSP Error: {result['error']}"
+    def _extract_answer_vsp(self, vsp_output_dir: str) -> str:
+        """
+        从VSP的debug log中提取最终答案（VSP专用方法）
         
-        # 尝试从对话历史中提取答案
-        if isinstance(result, list):
-            for message in reversed(result):
-                if isinstance(message, dict) and "content" in message:
-                    content = message["content"]
-                    if isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict) and "text" in item:
-                                text = item["text"]
-                                if "ANSWER:" in text and "TERMINATE" in text:
-                                    # 提取ANSWER: 和 TERMINATE 之间的内容
-                                    start = text.find("ANSWER:") + 7
-                                    end = text.find("TERMINATE")
-                                    if start > 6 and end > start:
-                                        return text[start:end].strip()
+        VSP的答案格式：debug log 中最后一个 "ANSWER: ... TERMINATE" 块
+        """
+        debug_log_path = os.path.join(vsp_output_dir, "vsp_debug.log")
         
-        # 如果没有找到标准答案格式，返回最后一条消息
-        if isinstance(result, list) and result:
-            last_message = result[-1]
-            if isinstance(last_message, dict) and "content" in last_message:
-                content = last_message["content"]
-                if isinstance(content, list):
-                    for item in content:
-                        if isinstance(item, dict) and "text" in item:
-                            return item["text"]
+        if not os.path.exists(debug_log_path):
+            return "VSP Error: debug log not found"
         
-        return "VSP completed but no clear answer found"
+        try:
+            with open(debug_log_path, "r", encoding="utf-8") as f:
+                log_content = f.read()
+            
+            # 找到最后一个 ANSWER: 和 TERMINATE 之间的内容
+            # 使用正则表达式匹配，支持多行
+            import re
+            # 查找所有 ANSWER: ... TERMINATE 模式
+            pattern = r'ANSWER:\s*(.*?)\s*TERMINATE'
+            matches = list(re.finditer(pattern, log_content, re.DOTALL))
+            
+            if matches:
+                # 取最后一个匹配（最终答案）
+                last_match = matches[-1]
+                answer = last_match.group(1).strip()
+                return answer
+            
+            # 如果没有找到标准格式，尝试查找最后的 ANSWER: 行
+            lines = log_content.split('\n')
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].startswith('ANSWER:'):
+                    # 收集从 ANSWER: 开始到文件结束的所有内容
+                    answer_lines = []
+                    for j in range(i, len(lines)):
+                        line = lines[j]
+                        if j == i:
+                            # 第一行，去掉 "ANSWER:" 前缀
+                            answer_lines.append(line[7:].strip())
+                        elif 'TERMINATE' in line:
+                            # 遇到 TERMINATE，停止
+                            break
+                        else:
+                            answer_lines.append(line)
+                    return '\n'.join(answer_lines).strip()
+            
+            return "VSP completed but no clear answer found in debug log"
+        
+        except Exception as e:
+            return f"VSP Error: Failed to read debug log: {str(e)}"
 
 def get_provider(cfg: 'RunConfig') -> BaseProvider:
     if cfg.proxy:
@@ -329,9 +362,13 @@ def get_provider(cfg: 'RunConfig') -> BaseProvider:
         return QwenProvider(endpoint=os.environ.get("QWEN_ENDPOINT","http://127.0.0.1:8000"),
                             api_key=os.environ.get("QWEN_API_KEY"))
     elif cfg.provider == "vsp":
+        # 获取批量时间戳（必需）
+        batch_timestamp = getattr(cfg, 'vsp_batch_timestamp', None)
+        
         return VSPProvider(
             vsp_path=os.environ.get("VSP_PATH", "/Users/yuantian/code/VisualSketchpad"),
-            output_dir=os.environ.get("VSP_OUTPUT_DIR", "output/vsp_details")
+            output_dir=os.environ.get("VSP_OUTPUT_DIR", "output/vsp_details"),
+            batch_timestamp=batch_timestamp
         )
     else:
         raise ValueError(f"Unknown provider: {cfg.provider}")
