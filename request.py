@@ -368,15 +368,63 @@ def format_time(seconds: float) -> str:
         minutes = int((seconds % 3600) // 60)
         return f"{hours}h{minutes}m"
 
+def is_failed_answer(answer: str) -> bool:
+    """
+    检测答案是否为失败的模式
+    
+    失败模式包括：
+    1. VSP 返回的不完整提示文本（如 "<your answer> and ends with"）
+    2. 明确的错误标志（如 "[ERROR]"）
+    """
+    if not answer or not isinstance(answer, str):
+        return True
+    
+    answer_stripped = answer.strip()
+    
+    # 检测明确的错误标志
+    if answer_stripped.startswith("[ERROR]"):
+        return True
+    
+    # 检测 VSP 的失败模式
+    failed_patterns = [
+        "<your answer> and ends with",  # VSP LLM 调用失败
+        "Please generate the next THOUGHT and ACTION",  # VSP 未完成
+        "If you can get the answer, please also reply with ANSWER",  # VSP 提示文本
+        "VSP completed but no clear answer found",  # VSP 没有找到答案
+        "VSP Error:",  # VSP 执行错误
+    ]
+    
+    answer_lower = answer_stripped.lower()
+    
+    # 检测失败模式
+    for pattern in failed_patterns:
+        if pattern.lower() in answer_lower:
+            return True
+    
+    return False
+
 async def send_with_retry(provider: BaseProvider, prompt_struct: Dict[str, Any], cfg: RunConfig, *, retries: int = 3) -> str:
     delay = 1.0
     for i in range(retries):
         try:
             # 添加超时保护（120秒）
-            return await asyncio.wait_for(
+            answer = await asyncio.wait_for(
                 provider.send(prompt_struct, cfg),
                 timeout=120.0
             )
+            
+            # 检测失败的答案模式（VSP 或 LLM 返回的不完整答案）
+            if is_failed_answer(answer):
+                error_msg = f"[ERROR] 收到不完整答案: {answer[:50]}"
+                if i == retries - 1:
+                    return error_msg
+                print(f"⚠️  收到不完整答案，重试中... ({i+1}/{retries})")
+                await asyncio.sleep(delay + random.random() * 0.2)
+                delay *= 2
+                continue
+            
+            return answer
+            
         except asyncio.TimeoutError:
             error_msg = f"[ERROR] API调用超时（120秒）"
             if i == retries - 1:
@@ -496,7 +544,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", default="openai")  # openai / qwen / vsp
-    parser.add_argument("--model_name", default="gpt-4o")
+    parser.add_argument("--model_name", default="gpt-5")
     parser.add_argument("--json_glob", required=True)
     parser.add_argument("--image_base", required=True)
     parser.add_argument("--save_path", default=None,

@@ -316,33 +316,56 @@ class VSPProvider(BaseProvider):
             # 找到最后一个 ANSWER: 和 TERMINATE 之间的内容
             # 使用正则表达式匹配，支持多行
             import re
+            
+            # 首先找到最后一个 "# RESULT #:" 的位置
+            result_marker = "# RESULT #:"
+            last_result_idx = log_content.rfind(result_marker)
+            
             # 查找所有 ANSWER: ... TERMINATE 模式
             pattern = r'ANSWER:\s*(.*?)\s*TERMINATE'
             matches = list(re.finditer(pattern, log_content, re.DOTALL))
             
             if matches:
-                # 取最后一个匹配（最终答案）
-                last_match = matches[-1]
-                answer = last_match.group(1).strip()
-                return answer
+                # 只考虑在最后一个 RESULT 之后的匹配
+                valid_matches = []
+                for match in matches:
+                    # 如果找到了 RESULT 标记，只接受在其之后的匹配
+                    if last_result_idx == -1 or match.start() > last_result_idx:
+                        valid_matches.append(match)
+                
+                if valid_matches:
+                    # 取最后一个有效匹配（最终答案）
+                    last_match = valid_matches[-1]
+                    answer = last_match.group(1).strip()
+                    # 确保不是提示文本（如 "<your answer>"）
+                    if answer and not answer.startswith('<your answer>'):
+                        return answer
             
             # 如果没有找到标准格式，尝试查找最后的 ANSWER: 行
-            lines = log_content.split('\n')
-            for i in range(len(lines) - 1, -1, -1):
-                if lines[i].startswith('ANSWER:'):
-                    # 收集从 ANSWER: 开始到文件结束的所有内容
-                    answer_lines = []
-                    for j in range(i, len(lines)):
-                        line = lines[j]
-                        if j == i:
-                            # 第一行，去掉 "ANSWER:" 前缀
-                            answer_lines.append(line[7:].strip())
-                        elif 'TERMINATE' in line:
-                            # 遇到 TERMINATE，停止
-                            break
-                        else:
-                            answer_lines.append(line)
-                    return '\n'.join(answer_lines).strip()
+            # 但只在 "# RESULT #:" 之后查找（避免匹配提示文本中的 ANSWER）
+            if last_result_idx != -1:
+                # 只在最后一个 RESULT 部分中查找
+                result_section = log_content[last_result_idx:]
+                lines = result_section.split('\n')
+                
+                for i in range(len(lines) - 1, -1, -1):
+                    if lines[i].startswith('ANSWER:'):
+                        # 收集从 ANSWER: 开始到文件结束的所有内容
+                        answer_lines = []
+                        for j in range(i, len(lines)):
+                            line = lines[j]
+                            if j == i:
+                                # 第一行，去掉 "ANSWER:" 前缀
+                                answer_lines.append(line[7:].strip())
+                            elif 'TERMINATE' in line:
+                                # 遇到 TERMINATE，停止
+                                break
+                            else:
+                                answer_lines.append(line)
+                        answer = '\n'.join(answer_lines).strip()
+                        # 确保不是提示文本（如 "<your answer> and ends with"）
+                        if answer and not answer.startswith('<your answer>'):
+                            return answer
             
             return "VSP completed but no clear answer found in debug log"
         
