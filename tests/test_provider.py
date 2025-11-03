@@ -49,10 +49,14 @@ Provider 测试脚本
 ============================================================
 """
 import os
+import sys
 import asyncio
 import base64
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
+
+# 添加项目根目录到路径，以便导入模块
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from provider import get_provider, BaseProvider
 

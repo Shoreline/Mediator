@@ -6,11 +6,20 @@
 import asyncio
 import base64
 import os
+import sys
+from datetime import datetime
+
+# 添加项目根目录到路径，以便导入模块
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from provider import VSPProvider
 from request import RunConfig
 
 async def test_vsp_provider():
     """测试VSPProvider的基本功能"""
+    
+    # 生成时间戳
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
     # 创建测试配置
     cfg = RunConfig(
@@ -19,9 +28,10 @@ async def test_vsp_provider():
         temperature=0.0,
         max_tokens=2048
     )
+    cfg.vsp_batch_timestamp = timestamp
     
     # 创建VSPProvider实例
-    provider = VSPProvider()
+    provider = VSPProvider(batch_timestamp=timestamp)
     
     # 使用VSP自带的测试数据（blink_spatial任务）
     vsp_test_image = "/Users/yuantian/code/VisualSketchpad/tasks/blink_spatial/processed/val_Spatial_Relation_1/image.jpg"
@@ -36,7 +46,7 @@ async def test_vsp_provider():
     with open(vsp_test_image, "rb") as f:
         image_b64 = base64.b64encode(f.read()).decode("utf-8")
     
-    # 创建一个vision任务测试
+    # 创建一个vision任务测试（需要包含 meta 信息）
     test_prompt = {
         "parts": [
             {
@@ -48,7 +58,11 @@ async def test_vsp_provider():
                 "b64": image_b64,
                 "mime": "image/jpeg"
             }
-        ]
+        ],
+        "meta": {
+            "category": "test_category",
+            "index": "0"
+        }
     }
     
     try:
