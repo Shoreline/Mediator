@@ -1,0 +1,20 @@
+{
+    "total": {
+        "total_cost": 0,
+        "qwen/qwen3-vl-235b-a22b-instruct": {
+            "cost": 0,
+            "prompt_tokens": 5291,
+            "completion_tokens": 600,
+            "total_tokens": 5891
+        }
+    },
+    "actual": {
+        "total_cost": 0,
+        "qwen/qwen3-vl-235b-a22b-instruct": {
+            "cost": 0,
+            "prompt_tokens": 5291,
+            "completion_tokens": 600,
+            "total_tokens": 5891
+        }
+    }
+}
