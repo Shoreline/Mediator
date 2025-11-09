@@ -120,11 +120,11 @@ class VSPProvider(BaseProvider):
     - category: 任务类别（从 prompt_struct["meta"]["category"] 获取）
     - index: 任务编号（从 prompt_struct["meta"]["index"] 获取）
     """
-    def __init__(self, vsp_path: str = "/Users/yuantian/code/VisualSketchpad", 
+    def __init__(self, vsp_path: str = "~/code/VisualSketchpad", 
                  output_dir: str = "output/vsp_details",
                  batch_timestamp: str = None):
-        self.vsp_path = vsp_path
-        self.agent_path = os.path.join(vsp_path, "agent")
+        self.vsp_path = os.path.expanduser(vsp_path)
+        self.agent_path = os.path.join(self.vsp_path, "agent")
         self.output_dir = output_dir  # VSP详细输出保存目录
         self.batch_timestamp = batch_timestamp  # 批量处理的时间戳
         os.makedirs(self.output_dir, exist_ok=True)
@@ -389,7 +389,7 @@ def get_provider(cfg: 'RunConfig') -> BaseProvider:
         batch_timestamp = getattr(cfg, 'vsp_batch_timestamp', None)
         
         return VSPProvider(
-            vsp_path=os.environ.get("VSP_PATH", "/Users/yuantian/code/VisualSketchpad"),
+            vsp_path=os.environ.get("VSP_PATH", "~/code/VisualSketchpad"),
             output_dir=os.environ.get("VSP_OUTPUT_DIR", "output/vsp_details"),
             batch_timestamp=batch_timestamp
         )

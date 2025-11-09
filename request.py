@@ -207,6 +207,13 @@ def create_prompt(item: Item, *, prompt_config: Optional[Dict]=None, provider: s
 
 # ============ 统一落盘（保存发送的prompt + 收到的结果） ============
 
+def path_to_tilde(path: str) -> str:
+    """将绝对路径转换为 ~ 形式（如果路径在用户主目录下）"""
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        return path.replace(home, "~", 1)
+    return path
+
 def format_pred_for_disk(answer_text: str) -> List[Dict[str, Any]]:
     return [{
         "role": "assistant",
@@ -219,14 +226,14 @@ def format_pred_for_disk(answer_text: str) -> List[Dict[str, Any]]:
 
 def build_record_for_disk(item: Item, prompt_struct: Dict[str, Any], answer_text: str, cfg: RunConfig) -> Dict[str, Any]:
     # 与你之前的结构兼容，并额外保存 sent prompt
-    # 处理 prompt_parts：将 base64 图片替换为路径
+    # 处理 prompt_parts：将 base64 图片替换为路径（转换为 ~ 形式）
     prompt_parts_for_disk = []
     for part in prompt_struct["parts"]:
         if part.get("type") == "image":
-            # 不保存 base64，只保存图片路径
+            # 不保存 base64，只保存图片路径（转换为 ~ 形式）
             prompt_parts_for_disk.append({
                 "type": "image",
-                "image_path": item.image_path
+                "image_path": path_to_tilde(item.image_path)
             })
         else:
             # 文本部分正常保存
@@ -239,7 +246,7 @@ def build_record_for_disk(item: Item, prompt_struct: Dict[str, Any], answer_text
             "index": str(item.index),
             "category": item.category,
             "question": item.question,
-            "image_path": item.image_path,
+            "image_path": path_to_tilde(item.image_path),
             "image_type": item.image_type,
             "question_field": MMSB_IMAGE_QUESTION_MAP[item.image_type]
         },
@@ -375,6 +382,7 @@ def is_failed_answer(answer: str) -> bool:
     失败模式包括：
     1. VSP 返回的不完整提示文本（如 "<your answer> and ends with"）
     2. 明确的错误标志（如 "[ERROR]"）
+    3. Qwen 模型的特殊标记异常输出（如 "<|im_start|>"）
     """
     if not answer or not isinstance(answer, str):
         return True
@@ -384,6 +392,27 @@ def is_failed_answer(answer: str) -> bool:
     # 检测明确的错误标志
     if answer_stripped.startswith("[ERROR]"):
         return True
+    
+    # 检测 Qwen 模型的特殊标记异常（内容安全过滤或生成失败）
+    # 如果答案主要由特殊标记组成（超过 50% 或少于 100 个正常字符），视为失败
+    special_tokens = ["<|im_start|>", "<|im_end|>", "<|endoftext|>"]
+    for token in special_tokens:
+        token_count = answer.count(token)
+        if token_count > 5:  # 多次重复特殊标记
+            # 计算特殊标记占比
+            token_chars = len(token) * token_count
+            if token_chars > len(answer) * 0.5:  # 超过 50% 是特殊标记
+                return True
+    
+    # 检测答案是否太短且只有特殊标记和空白
+    if len(answer_stripped) < 100:
+        # 移除所有特殊标记后检查是否还有实质内容
+        content_without_tokens = answer_stripped
+        for token in special_tokens:
+            content_without_tokens = content_without_tokens.replace(token, "")
+        content_without_tokens = content_without_tokens.strip()
+        if len(content_without_tokens) < 20:  # 实质内容少于 20 个字符
+            return True
     
     # 检测 VSP 的失败模式
     failed_patterns = [
@@ -581,11 +610,12 @@ if __name__ == "__main__":
     if args.save_path is None:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # 清理 model_name 中可能不适合文件名的字符
+        safe_model_name = re.sub(r'[^\w\-.]', '_', args.model_name)
+        
         if args.provider == "vsp":
-            # VSP 使用 provider 名称作为前缀
-            args.save_path = f"output/vsp_{timestamp}.jsonl"
+            # VSP 使用 provider 名称作为前缀，并包含模型信息
+            args.save_path = f"output/vsp_{safe_model_name}_{timestamp}.jsonl"
         else:
-            safe_model_name = re.sub(r'[^\w\-.]', '_', args.model_name)
             args.save_path = f"output/{safe_model_name}_{timestamp}.jsonl"
         print(f"📝 自动生成输出路径: {args.save_path}")
 
