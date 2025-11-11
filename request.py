@@ -565,6 +565,8 @@ async def run_pipeline(
     print(f"吞吐量: {total_tasks/total_time:.2f} 任务/秒")
     print(f"输出文件: {cfg.save_path}")
     print(f"{'='*80}\n")
+    
+    return total_tasks
 
 # ============ 入口（示例） ============
 
@@ -582,8 +584,8 @@ if __name__ == "__main__":
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--max_tokens", type=int, default=2048)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--consumers", type=int, default=10,
-                       help="并发消费者数量。默认: 10。OpenRouter等API建议使用较低值（3-5）避免限流")
+    parser.add_argument("--consumers", type=int, default=20,
+                       help="并发消费者数量。默认: 20。OpenRouter等API建议使用较低值（3-5）避免限流")
     parser.add_argument("--proxy", default=None)
     parser.add_argument("--max_tasks", type=int, default=None,
                        help="最大任务数（用于小批量测试，不指定则处理所有数据）")
@@ -606,8 +608,9 @@ if __name__ == "__main__":
         print(f"   有效的选项: {', '.join(MMSB_IMAGE_QUESTION_MAP.keys())}")
         sys.exit(1)
     
-    # 如果未指定 save_path，自动生成带时间戳的文件名
-    if args.save_path is None:
+    # 如果未指定 save_path，自动生成带时间戳的文件名（不含任务数）
+    auto_generated_save_path = args.save_path is None
+    if auto_generated_save_path:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # 清理 model_name 中可能不适合文件名的字符
         safe_model_name = re.sub(r'[^\w\-.]', '_', args.model_name)
@@ -617,7 +620,7 @@ if __name__ == "__main__":
             args.save_path = f"output/vsp_{safe_model_name}_{timestamp}.jsonl"
         else:
             args.save_path = f"output/{safe_model_name}_{timestamp}.jsonl"
-        print(f"📝 自动生成输出路径: {args.save_path}")
+        print(f"📝 自动生成输出路径（临时）: {args.save_path}")
 
     cfg = RunConfig(
         provider=args.provider,
@@ -632,10 +635,21 @@ if __name__ == "__main__":
         max_tasks=args.max_tasks,
     )
 
-    asyncio.run(run_pipeline(
+    total_tasks = asyncio.run(run_pipeline(
         json_files_pattern=args.json_glob,
         image_base_path=args.image_base,
         cfg=cfg,
         image_types=args.image_types,
         categories=args.categories
     ))
+    
+    # 如果是自动生成的文件名，根据实际任务数重命名
+    if auto_generated_save_path and total_tasks > 0:
+        old_path = args.save_path
+        # 在文件扩展名之前插入 _tasks_xxx
+        base_path = old_path.rsplit('.', 1)[0]  # 去掉 .jsonl
+        new_path = f"{base_path}_tasks_{total_tasks}.jsonl"
+        
+        if os.path.exists(old_path):
+            os.rename(old_path, new_path)
+            print(f"✅ 文件已重命名: {new_path}")

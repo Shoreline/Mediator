@@ -1,5 +1,6 @@
 import os
 import json
+import csv
 import time
 import datetime
 import asyncio
@@ -40,7 +41,7 @@ async def async_get_res(prompt: str, model: str = "gpt-5-mini", max_retries: int
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
-                "max_completion_tokens": 200  # 增加到 200，确保有足够的 tokens 生成输出
+                "max_completion_tokens": 2000  # 增加到 200，确保有足够的 tokens 生成输出
             }
             # 只在模型支持时添加 temperature（某些新模型只支持默认值）
             # 如果 model 名称包含 "gpt-5"，使用默认 temperature（不设置）并添加 reasoning_effort=low
@@ -121,7 +122,7 @@ async def async_get_res(prompt: str, model: str = "gpt-5-mini", max_retries: int
                 if attempt < max_retries - 1:
                     # 增加 tokens 数量
                     current_tokens = request_params.get("max_completion_tokens", 200)
-                    request_params["max_completion_tokens"] = min(current_tokens * 2, 1000)  # 最多 1000
+                    request_params["max_completion_tokens"] = min(current_tokens * 2, 5000)  # 最多 5000
                     wait_time = (attempt + 1) * 2
                     print(f"⚠️  Token 限制，增加到 {request_params['max_completion_tokens']}，{wait_time}秒后重试...")
                     await asyncio.sleep(wait_time)
@@ -326,12 +327,13 @@ async def async_eval_single_record(record: Dict, model: str, records: List[Dict]
                 print(f"❌ 评估失败: {category}/{record_index} - {e}")
             return (False, "error", record_index, category)
 
-async def perform_eval_async(jsonl_file_path: str, scenario: Optional[str] = None, model: str = "gpt-5-mini", max_tasks: Optional[int] = None, concurrency: int = 20):
+async def perform_eval_async(jsonl_file_path: str, scenario: Optional[str] = None, model: str = "gpt-5-mini", max_tasks: Optional[int] = None, concurrency: int = 20, override: bool = False):
     """
     异步并发评估
     
     Args:
         concurrency: 并发数（默认 20）
+        override: 是否覆盖已有的评估结果（默认 False，即断点续传）
     """
     print(f"📖 加载文件: {jsonl_file_path}")
     records = load_jsonl(jsonl_file_path)
@@ -346,6 +348,11 @@ async def perform_eval_async(jsonl_file_path: str, scenario: Optional[str] = Non
         print(f"🔢 限制评估任务数: {max_tasks}")
     
     print(f"🚀 并发数: {concurrency}")
+    
+    if override:
+        print(f"⚠️  覆盖模式：将重新评估所有记录（忽略已有结果）")
+    else:
+        print(f"✅ 断点续传模式：跳过已评估的记录")
     
     # 过滤出需要评估的记录
     records_to_eval_with_idx = []
@@ -363,8 +370,8 @@ async def perform_eval_async(jsonl_file_path: str, scenario: Optional[str] = Non
     skipped_count = 0
     
     for idx, record in records_to_eval_with_idx:
-        # 检查是否已经评估过
-        if 'is_safe(gpt)' in record:
+        # 检查是否已经评估过（除非 override=True）
+        if not override and 'is_safe(gpt)' in record:
             skipped_count += 1
             continue
         
@@ -459,10 +466,10 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None):
     jsonl_basename = os.path.basename(jsonl_file_path)
     jsonl_name_without_ext = os.path.splitext(jsonl_basename)[0]
     
-    # 输出文件路径：output/eval_{文件名}.json
+    # 输出文件路径：output/eval_{文件名}.csv
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"eval_{jsonl_name_without_ext}.json")
+    csv_file = os.path.join(output_dir, f"eval_{jsonl_name_without_ext}.csv")
     
     # 过滤出需要计算的记录
     records_to_calc = []
@@ -517,11 +524,23 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None):
             metrics["safe_rate"] = float(metrics["safe"]) / float(evaluated)
         all_metrics[cat] = metrics
     
-    # 只保存一个汇总文件
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(all_metrics, f, indent=2, ensure_ascii=False)
+    # 保存 CSV 文件
+    with open(csv_file, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        # 写入表头
+        writer.writerow(['Category', 'Total', 'Evaluated', 'Safe', 'Unsafe', 'Error', 'Attack_Rate(%)', 'Safe_Rate(%)'])
+        # 写入数据行
+        for cat, metrics in sorted(all_metrics.items()):
+            total = metrics['total']
+            evaluated = metrics['evaluated']
+            safe = metrics['safe']
+            unsafe = metrics['unsafe']
+            error = metrics['error']
+            attack_rate = metrics.get('attack_rate', 0) * 100
+            safe_rate = metrics.get('safe_rate', 0) * 100
+            writer.writerow([cat, total, evaluated, safe, unsafe, error, f"{attack_rate:.2f}", f"{safe_rate:.2f}"])
     
-    print(f"✅ 评估指标已保存: {output_file}")
+    print(f"✅ 评估指标已保存: {csv_file}")
     
     # 打印汇总表
     print(f"\n{'='*80}")
@@ -548,6 +567,8 @@ if __name__ == "__main__":
                        help="最大评估任务数（限制 get_res 调用次数，用于调试测试）")
     parser.add_argument("--concurrency", type=int, default=20,
                        help="并发数（默认: 20，建议 10-50 之间）")
+    parser.add_argument("--override", action="store_true",
+                       help="覆盖已有的评估结果，重新评估所有记录（默认: False，即断点续传）")
     args = parser.parse_args()
     
     if not os.path.exists(args.jsonl_file):
@@ -557,10 +578,10 @@ if __name__ == "__main__":
     # 执行评估（使用异步并发）
     if args.scenario:
         print(f"🚀 开始评估场景: {args.scenario}")
-        asyncio.run(perform_eval_async(args.jsonl_file, scenario=args.scenario, model=args.model, max_tasks=args.max_tasks, concurrency=args.concurrency))
+        asyncio.run(perform_eval_async(args.jsonl_file, scenario=args.scenario, model=args.model, max_tasks=args.max_tasks, concurrency=args.concurrency, override=args.override))
     else:
         print(f"🚀 开始评估所有场景")
-        asyncio.run(perform_eval_async(args.jsonl_file, scenario=None, model=args.model, max_tasks=args.max_tasks, concurrency=args.concurrency))
+        asyncio.run(perform_eval_async(args.jsonl_file, scenario=None, model=args.model, max_tasks=args.max_tasks, concurrency=args.concurrency, override=args.override))
     
     # 计算指标（输出到 output/eval_{文件名}.json）
     if args.scenario:
