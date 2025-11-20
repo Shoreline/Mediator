@@ -1,33 +1,32 @@
 """
-MM-SafetyBench 推理脚本
+MM-SafetyBench 推理与评估脚本（完整流水线）
+
+默认行为：自动执行 Request → Eval → Metrics 三个步骤
+- Request: 调用 LLM 生成答案
+- Eval: 使用 GPT 评估答案安全性
+- Metrics: 计算并输出评估指标
 
 使用示例：
 
-# 1. 测试 10 个样本（输出文件自动命名为：output/{model_name}_{timestamp}.jsonl）
-python request.py \
-  --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
-  --image_base "~/Downloads/MM-SafetyBench_imgs/" \
-  --max_tasks 10
+# 1. 最简单的用法：测试 10 个样本（使用默认数据路径）
+python request.py --max_tasks 10
 
-# 2. 测试 50 个样本，使用较少的并发，指定输出路径
-python request.py \
-  --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
-  --image_base "~/Downloads/MM-SafetyBench_imgs/" \
-  --max_tasks 50 \
-  --consumers 5 \
-  --save_path "test_output.jsonl"
+# 2. 仅生成答案（跳过评估）
+python request.py --max_tasks 10 --skip_eval
 
-# 3. 处理全部数据（不指定 --max_tasks 和 --save_path）
-python request.py \
-  --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
-  --image_base "~/Downloads/MM-SafetyBench_imgs/"
+# 3. 使用不同的模型
+python request.py --model_name "gpt-4o" --max_tasks 50
 
-# 4. 使用不同的模型
+# 4. 使用不同的评估模型
+python request.py --max_tasks 50 --eval_model "gpt-5"
+
+# 5. 使用 OpenRouter
+python request.py --provider openrouter --model_name "anthropic/claude-3.5-sonnet" --max_tasks 10
+
+# 6. 自定义数据路径
 python request.py \
-  --provider openrouter \
-  --model_name "anthropic/claude-3.5-sonnet" \
-  --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
-  --image_base "~/Downloads/MM-SafetyBench_imgs/" \
+  --json_glob "/custom/path/*.json" \
+  --image_base "/custom/images/" \
   --max_tasks 10
 """
 
@@ -576,8 +575,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", default="openai")  # openai / qwen / vsp
     parser.add_argument("--model_name", default="gpt-5")
-    parser.add_argument("--json_glob", required=True)
-    parser.add_argument("--image_base", required=True)
+    parser.add_argument("--json_glob", 
+                       default="~/code/MM-SafetyBench/data/processed_questions/*.json",
+                       help="JSON 文件的 glob 模式（默认: ~/code/MM-SafetyBench/data/processed_questions/*.json）")
+    parser.add_argument("--image_base", 
+                       default="~/Downloads/MM-SafetyBench_imgs/",
+                       help="图片基础目录（默认: ~/Downloads/MM-SafetyBench_imgs/）")
     parser.add_argument("--save_path", default=None,
                        help="输出路径（不指定则自动生成：output/{model_name}_{timestamp}.jsonl）")
     parser.add_argument("--temp", type=float, default=0.0)
@@ -598,6 +601,14 @@ if __name__ == "__main__":
     # MM-SafetyBench 类别过滤
     parser.add_argument("--categories", nargs='+', default=None,
                        help="要处理的类别，可指定多个。例如: --categories 08-Political_Lobbying 12-Health_Consultation。不指定则处理所有类别")
+    
+    # 评估参数
+    parser.add_argument("--skip_eval", action="store_true",
+                       help="跳过评估步骤（默认: False，即自动运行评估）")
+    parser.add_argument("--eval_model", default="gpt-5-mini",
+                       help="用于评估的模型（默认: gpt-5-mini）")
+    parser.add_argument("--eval_concurrency", type=int, default=20,
+                       help="评估并发数（默认: 20）")
     
     args = parser.parse_args()
     
@@ -635,6 +646,13 @@ if __name__ == "__main__":
         max_tasks=args.max_tasks,
     )
 
+    # ============ 步骤 1: Request（生成答案）============
+    print(f"\n{'='*80}")
+    print(f"📝 步骤 1/3: 生成答案（Request）")
+    print(f"{'='*80}\n")
+    
+    request_start = time.time()
+    
     total_tasks = asyncio.run(run_pipeline(
         json_files_pattern=args.json_glob,
         image_base_path=args.image_base,
@@ -643,7 +661,10 @@ if __name__ == "__main__":
         categories=args.categories
     ))
     
+    request_duration = time.time() - request_start
+    
     # 如果是自动生成的文件名，根据实际任务数重命名
+    final_jsonl_path = args.save_path
     if auto_generated_save_path and total_tasks > 0:
         old_path = args.save_path
         # 在文件扩展名之前插入 _tasks_xxx
@@ -652,4 +673,63 @@ if __name__ == "__main__":
         
         if os.path.exists(old_path):
             os.rename(old_path, new_path)
+            final_jsonl_path = new_path
             print(f"✅ 文件已重命名: {new_path}")
+    
+    print(f"\n✅ 步骤 1 完成")
+    print(f"   耗时: {format_time(request_duration)}")
+    print(f"   输出文件: {final_jsonl_path}\n")
+    
+    # ============ 步骤 2 & 3: 评估答案并计算指标 ============
+    if not args.skip_eval:
+        from mmsb_eval import perform_eval_async, cal_metric
+        
+        print(f"{'='*80}")
+        print(f"🔍 步骤 2/3: 评估答案安全性（Eval）")
+        print(f"{'='*80}\n")
+        
+        eval_start = time.time()
+        
+        # 执行评估
+        asyncio.run(perform_eval_async(
+            jsonl_file_path=final_jsonl_path,
+            scenario=None,  # 评估所有场景
+            model=args.eval_model,
+            max_tasks=None,  # 评估所有记录
+            concurrency=args.eval_concurrency,
+            override=True  # 默认重新评估所有记录
+        ))
+        
+        eval_duration = time.time() - eval_start
+        
+        print(f"\n✅ 步骤 2 完成")
+        print(f"   耗时: {format_time(eval_duration)}\n")
+        
+        # 计算指标
+        print(f"{'='*80}")
+        print(f"📊 步骤 3/3: 计算评估指标")
+        print(f"{'='*80}\n")
+        
+        metric_start = time.time()
+        
+        cal_metric(final_jsonl_path, scenario=None)
+        
+        metric_duration = time.time() - metric_start
+        
+        print(f"\n✅ 步骤 3 完成")
+        print(f"   耗时: {format_time(metric_duration)}\n")
+        
+        # 总结
+        total_duration = time.time() - request_start
+        
+        print(f"\n{'='*80}")
+        print(f"🎉 完整流水线执行完成！")
+        print(f"{'='*80}")
+        print(f"总耗时: {format_time(total_duration)}")
+        print(f"  - 生成答案: {format_time(request_duration)}")
+        print(f"  - 评估答案: {format_time(eval_duration)}")
+        print(f"  - 计算指标: {format_time(metric_duration)}")
+        print(f"输出文件: {final_jsonl_path}")
+        print(f"{'='*80}\n")
+    else:
+        print(f"\n⏭️  跳过评估步骤（使用 --skip_eval）")
