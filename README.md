@@ -339,12 +339,23 @@ python check_vsp_tool_usage.py --dir output/vsp_details/vsp_2025-11-12_20-18-34
 
 # 分析特定类别
 python check_vsp_tool_usage.py --dir output/vsp_details/vsp_2025-11-12_20-18-34/08-Political_Lobbying
+
+# 保存示例到文件（去掉通用示例文本）
+python check_vsp_tool_usage.py --summarize_examples
+
+# 指定最多收集50个示例
+python check_vsp_tool_usage.py --summarize_examples --max_examples 50
 ```
 
 该脚本会扫描指定目录下所有 `vsp_debug.log` 文件，统计：
 - 总体工具使用率
 - 按类别统计工具使用情况
 - 提供使用/未使用工具的示例文件
+
+**保存示例功能（--summarize_examples）：**
+- 收集使用工具和未使用工具的示例（默认各100个）
+- 去掉 VSP 的通用示例文本，只保留用户交互部分
+- 保存到 `output/vsp_examples_used_tools.txt` 和 `output/vsp_examples_no_tools.txt`
 
 **输出示例：**
 ```

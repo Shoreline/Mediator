@@ -49,8 +49,73 @@ def check_tool_usage(result_section: str) -> bool:
     
     return matches is not None
 
-def analyze_vsp_logs(vsp_details_dir: str):
-    """分析所有 VSP debug log"""
+def extract_user_interaction(log_content: str) -> str:
+    """
+    提取用户交互部分（去掉 VSP 的通用示例文本）
+    
+    返回最后一个 "# USER REQUEST #:" 之后的所有内容
+    """
+    user_request_marker = "# USER REQUEST #:"
+    last_user_request_idx = log_content.rfind(user_request_marker)
+    
+    if last_user_request_idx == -1:
+        return ""
+    
+    return log_content[last_user_request_idx:]
+
+def save_examples_to_files(examples_with_content: dict, output_dir: str = "output"):
+    """
+    保存示例到文件
+    
+    Args:
+        examples_with_content: {"used_tools": [(path, content), ...], "no_tools": [(path, content), ...]}
+        output_dir: 输出目录
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 保存使用了工具的示例
+    used_tools_file = os.path.join(output_dir, "vsp_examples_used_tools.txt")
+    with open(used_tools_file, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write("VSP 使用工具的示例（共 {} 个）\n".format(len(examples_with_content['used_tools'])))
+        f.write("=" * 80 + "\n\n")
+        
+        for i, (path, content) in enumerate(examples_with_content['used_tools'], 1):
+            f.write(f"\n{'='*80}\n")
+            f.write(f"示例 {i}/{len(examples_with_content['used_tools'])}\n")
+            f.write(f"文件: {path}\n")
+            f.write(f"{'='*80}\n\n")
+            f.write(content)
+            f.write("\n\n")
+    
+    # 保存未使用工具的示例
+    no_tools_file = os.path.join(output_dir, "vsp_examples_no_tools.txt")
+    with open(no_tools_file, 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write("VSP 未使用工具的示例（共 {} 个）\n".format(len(examples_with_content['no_tools'])))
+        f.write("=" * 80 + "\n\n")
+        
+        for i, (path, content) in enumerate(examples_with_content['no_tools'], 1):
+            f.write(f"\n{'='*80}\n")
+            f.write(f"示例 {i}/{len(examples_with_content['no_tools'])}\n")
+            f.write(f"文件: {path}\n")
+            f.write(f"{'='*80}\n\n")
+            f.write(content)
+            f.write("\n\n")
+    
+    print(f"\n✅ 示例已保存:")
+    print(f"   - 使用工具: {used_tools_file}")
+    print(f"   - 未使用工具: {no_tools_file}")
+
+def analyze_vsp_logs(vsp_details_dir: str, summarize_examples: bool = False, max_examples: int = 100):
+    """
+    分析所有 VSP debug log
+    
+    Args:
+        vsp_details_dir: VSP 详细输出目录
+        summarize_examples: 是否保存示例到文件
+        max_examples: 每种类型最多收集多少个示例
+    """
     
     vsp_details_path = Path(vsp_details_dir)
     
@@ -80,6 +145,12 @@ def analyze_vsp_logs(vsp_details_dir: str):
     
     # 示例文件（用于调试）
     examples = {
+        "used_tools": [],
+        "no_tools": []
+    }
+    
+    # 示例内容（用于保存到文件）
+    examples_with_content = {
         "used_tools": [],
         "no_tools": []
     }
@@ -121,11 +192,23 @@ def analyze_vsp_logs(vsp_details_dir: str):
             category_stats[category]["used_tools"] += 1
             if len(examples["used_tools"]) < 3:
                 examples["used_tools"].append(str(log_file))
+            
+            # 如果需要保存示例，收集内容
+            if summarize_examples and len(examples_with_content["used_tools"]) < max_examples:
+                user_interaction = extract_user_interaction(log_content)
+                if user_interaction:
+                    examples_with_content["used_tools"].append((str(log_file), user_interaction))
         else:
             stats["no_tools"] += 1
             category_stats[category]["no_tools"] += 1
             if len(examples["no_tools"]) < 3:
                 examples["no_tools"].append(str(log_file))
+            
+            # 如果需要保存示例，收集内容
+            if summarize_examples and len(examples_with_content["no_tools"]) < max_examples:
+                user_interaction = extract_user_interaction(log_content)
+                if user_interaction:
+                    examples_with_content["no_tools"].append((str(log_file), user_interaction))
         
         category_stats[category]["total"] += 1
     
@@ -166,6 +249,13 @@ def analyze_vsp_logs(vsp_details_dir: str):
     print("\n❌ 未使用工具的示例:")
     for example in examples["no_tools"]:
         print(f"   {example}")
+    
+    # 如果需要保存示例，保存到文件
+    if summarize_examples:
+        print(f"\n{'='*80}")
+        print(f"💾 保存示例到文件")
+        print(f"{'='*80}")
+        save_examples_to_files(examples_with_content)
 
 if __name__ == "__main__":
     import argparse
@@ -183,6 +273,12 @@ if __name__ == "__main__":
   
   # 分析特定的批次
   python check_vsp_tool_usage.py --dir output/vsp_details/vsp_2025-11-12_20-18-34/08-Political_Lobbying
+  
+  # 保存示例到文件（去掉通用示例文本）
+  python check_vsp_tool_usage.py --summarize_examples
+  
+  # 指定最多收集50个示例
+  python check_vsp_tool_usage.py --summarize_examples --max_examples 50
         """
     )
     
@@ -192,10 +288,23 @@ if __name__ == "__main__":
         help="VSP 详细输出目录路径（默认: output/vsp_details）"
     )
     
+    parser.add_argument(
+        "--summarize_examples",
+        action="store_true",
+        help="保存使用/未使用工具的示例到文件（默认: False）"
+    )
+    
+    parser.add_argument(
+        "--max_examples",
+        type=int,
+        default=100,
+        help="每种类型最多收集多少个示例（默认: 100）"
+    )
+    
     args = parser.parse_args()
     
     # 展开用户路径（支持 ~ 符号）
     vsp_details_dir = os.path.expanduser(args.dir)
     
-    analyze_vsp_logs(vsp_details_dir)
+    analyze_vsp_logs(vsp_details_dir, summarize_examples=args.summarize_examples, max_examples=args.max_examples)
 
