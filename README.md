@@ -331,10 +331,17 @@ python mmsb_eval.py \
 使用 `check_vsp_tool_usage.py` 分析 VSP 是否使用了视觉工具（detection, segmentation 等）：
 
 ```bash
+# 分析默认目录（所有批次）
 python check_vsp_tool_usage.py
+
+# 分析指定批次
+python check_vsp_tool_usage.py --dir output/vsp_details/vsp_2025-11-12_20-18-34
+
+# 分析特定类别
+python check_vsp_tool_usage.py --dir output/vsp_details/vsp_2025-11-12_20-18-34/08-Political_Lobbying
 ```
 
-该脚本会扫描 `output/vsp_details/` 下所有 `vsp_debug.log` 文件，统计：
+该脚本会扫描指定目录下所有 `vsp_debug.log` 文件，统计：
 - 总体工具使用率
 - 按类别统计工具使用情况
 - 提供使用/未使用工具的示例文件

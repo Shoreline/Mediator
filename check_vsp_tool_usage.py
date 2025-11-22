@@ -168,6 +168,34 @@ def analyze_vsp_logs(vsp_details_dir: str):
         print(f"   {example}")
 
 if __name__ == "__main__":
-    vsp_details_dir = "/Users/yuantian/code/Mediator/output/vsp_details"
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="分析 VSP debug log 文件，统计工具使用情况",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例用法:
+  # 分析默认目录
+  python check_vsp_tool_usage.py
+  
+  # 分析指定目录
+  python check_vsp_tool_usage.py --dir output/vsp_details/vsp_2025-11-12_20-18-34
+  
+  # 分析特定的批次
+  python check_vsp_tool_usage.py --dir output/vsp_details/vsp_2025-11-12_20-18-34/08-Political_Lobbying
+        """
+    )
+    
+    parser.add_argument(
+        "--dir",
+        default="output/vsp_details",
+        help="VSP 详细输出目录路径（默认: output/vsp_details）"
+    )
+    
+    args = parser.parse_args()
+    
+    # 展开用户路径（支持 ~ 符号）
+    vsp_details_dir = os.path.expanduser(args.dir)
+    
     analyze_vsp_logs(vsp_details_dir)
 
