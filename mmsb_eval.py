@@ -5,6 +5,7 @@ import time
 import datetime
 import asyncio
 import random
+import re
 from typing import Dict, List, Optional
 from openai import AsyncOpenAI
 
@@ -141,6 +142,62 @@ async def async_get_res(prompt: str, model: str = "gpt-5-mini", max_retries: int
                 print(f"❌ API 调用失败，已达到最大重试次数: {e}")
                 return "error"
     return "error"
+
+def extract_result_section_vsp(log_content: str) -> str:
+    """
+    从 VSP debug log 中提取最后一个 # USER REQUEST # 之后的 # RESULT #: 内容
+    
+    VSP 的 prompt 包含很多 EXAMPLE，每个都有 # RESULT #:
+    我们只关心最后一个真实的用户请求的结果
+    """
+    # 先找到最后一个 "# USER REQUEST #:"
+    user_request_marker = "# USER REQUEST #:"
+    last_user_request_idx = log_content.rfind(user_request_marker)
+    
+    if last_user_request_idx == -1:
+        return ""
+    
+    # 在最后一个 USER REQUEST 之后找 RESULT
+    content_after_user_request = log_content[last_user_request_idx:]
+    
+    result_marker = "# RESULT #:"
+    result_idx = content_after_user_request.find(result_marker)
+    
+    if result_idx == -1:
+        return ""
+    
+    return content_after_user_request[result_idx:]
+
+def check_vsp_tool_usage_from_log(log_file_path: str) -> Optional[bool]:
+    """
+    从 VSP debug log 文件检测是否使用了工具
+    
+    Returns:
+        True: 使用了工具
+        False: 未使用工具
+        None: 无法检测（文件不存在或解析失败）
+    """
+    if not os.path.exists(log_file_path):
+        return None
+    
+    try:
+        with open(log_file_path, 'r', encoding='utf-8') as f:
+            log_content = f.read()
+    except Exception as e:
+        print(f"⚠️  读取 VSP debug log 失败: {log_file_path} - {e}")
+        return None
+    
+    # 提取 RESULT 部分
+    result_section = extract_result_section_vsp(log_content)
+    
+    if not result_section:
+        return None
+    
+    # 查找 ```python 代码块
+    pattern = r'```python\s+.*?```'
+    matches = re.search(pattern, result_section, re.DOTALL)
+    
+    return matches is not None
 
 def extract_answer_text(pred: List[Dict]) -> str:
     """
@@ -447,6 +504,97 @@ async def perform_eval_async(jsonl_file_path: str, scenario: Optional[str] = Non
     print(f"   - 平均速度: {success_count/eval_duration:.2f} 条/秒" if success_count > 0 else "")
 
 
+def add_vsp_tool_usage_field(jsonl_file_path: str):
+    """
+    为 VSP 的 JSONL 文件添加 used_vsp_tools 字段
+    
+    从文件名中提取时间戳，构建对应的 vsp_debug.log 路径，检测工具使用情况
+    """
+    # 检测是否是 VSP 文件
+    jsonl_basename = os.path.basename(jsonl_file_path)
+    if not jsonl_basename.startswith('vsp_'):
+        print(f"⚠️  不是 VSP 文件，跳过工具使用检测: {jsonl_basename}")
+        return
+    
+    # 从文件名提取时间戳
+    # 格式: vsp_<model>_YYYY-MM-DD_HH-MM-SS_tasks_<n>.jsonl
+    # 或: vsp_YYYY-MM-DD_HH-MM-SS.jsonl
+    timestamp_pattern = r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})'
+    match = re.search(timestamp_pattern, jsonl_basename)
+    
+    if not match:
+        print(f"⚠️  无法从文件名提取时间戳: {jsonl_basename}")
+        return
+    
+    timestamp = match.group(1)
+    vsp_batch_dir = f"output/vsp_details/vsp_{timestamp}"
+    
+    if not os.path.exists(vsp_batch_dir):
+        print(f"⚠️  VSP 详细输出目录不存在: {vsp_batch_dir}")
+        return
+    
+    print(f"\n🔍 开始检测 VSP 工具使用情况...")
+    print(f"   JSONL 文件: {jsonl_file_path}")
+    print(f"   VSP 详细输出: {vsp_batch_dir}")
+    
+    # 加载 JSONL 文件
+    records = load_jsonl(jsonl_file_path)
+    
+    if not records:
+        print("⚠️  文件为空，无记录可处理")
+        return
+    
+    # 统计信息
+    stats = {
+        'total': len(records),
+        'detected': 0,
+        'used_tools': 0,
+        'no_tools': 0,
+        'not_found': 0,
+        'already_has_field': 0
+    }
+    
+    # 为每条记录添加 used_vsp_tools 字段
+    for record in records:
+        # 检查是否已经有这个字段
+        if 'used_vsp_tools' in record:
+            stats['already_has_field'] += 1
+            continue
+        
+        # 获取 category 和 index
+        origin = record.get('origin', {})
+        category = origin.get('category', 'Unknown')
+        index = origin.get('index', 'N/A')
+        
+        # 构建 debug log 路径
+        debug_log_path = os.path.join(vsp_batch_dir, category, str(index), 'output', 'vsp_debug.log')
+        
+        # 检测工具使用
+        used_tools = check_vsp_tool_usage_from_log(debug_log_path)
+        
+        if used_tools is None:
+            # 无法检测
+            stats['not_found'] += 1
+            record['used_vsp_tools'] = None
+        else:
+            stats['detected'] += 1
+            record['used_vsp_tools'] = used_tools
+            if used_tools:
+                stats['used_tools'] += 1
+            else:
+                stats['no_tools'] += 1
+    
+    # 保存更新后的文件
+    save_jsonl(jsonl_file_path, records)
+    
+    print(f"\n✅ VSP 工具使用检测完成:")
+    print(f"   - 总记录数: {stats['total']}")
+    print(f"   - 已检测: {stats['detected']}")
+    print(f"   - 使用了工具: {stats['used_tools']} ({stats['used_tools']/stats['detected']*100:.1f}%)" if stats['detected'] > 0 else "   - 使用了工具: 0")
+    print(f"   - 未使用工具: {stats['no_tools']} ({stats['no_tools']/stats['detected']*100:.1f}%)" if stats['detected'] > 0 else "   - 未使用工具: 0")
+    print(f"   - 无法检测: {stats['not_found']}")
+    print(f"   - 已有字段: {stats['already_has_field']}")
+
 def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None):
     """
     计算评估指标，生成单个 summary 文件到 output/ 目录
@@ -569,27 +717,45 @@ if __name__ == "__main__":
                        help="并发数（默认: 20，建议 10-50 之间）")
     parser.add_argument("--override", action="store_true",
                        help="覆盖已有的评估结果，重新评估所有记录（默认: False，即断点续传）")
+    parser.add_argument("--add_vsp_tools", action="store_true",
+                       help="仅添加 VSP 工具使用字段（跳过评估和指标计算）")
+    parser.add_argument("--skip_vsp_tools", action="store_true",
+                       help="跳过 VSP 工具使用检测（默认: False，自动检测 VSP 文件）")
     args = parser.parse_args()
     
     if not os.path.exists(args.jsonl_file):
         print(f"❌ 文件不存在: {args.jsonl_file}")
         exit(1)
     
-    # 执行评估（使用异步并发）
-    if args.scenario:
-        print(f"🚀 开始评估场景: {args.scenario}")
-        asyncio.run(perform_eval_async(args.jsonl_file, scenario=args.scenario, model=args.model, max_tasks=args.max_tasks, concurrency=args.concurrency, override=args.override))
+    # 如果只是添加 VSP 工具字段，跳过评估和指标计算
+    if args.add_vsp_tools:
+        print(f"\n{'='*80}")
+        print(f"🔧 仅添加 VSP 工具使用字段")
+        print(f"{'='*80}")
+        add_vsp_tool_usage_field(args.jsonl_file)
     else:
-        print(f"🚀 开始评估所有场景")
-        asyncio.run(perform_eval_async(args.jsonl_file, scenario=None, model=args.model, max_tasks=args.max_tasks, concurrency=args.concurrency, override=args.override))
-    
-    # 计算指标（输出到 output/eval_{文件名}.json）
-    if args.scenario:
-        print(f"\n📊 开始计算场景指标: {args.scenario}")
-        cal_metric(args.jsonl_file, scenario=args.scenario)
-    else:
-        print(f"\n📊 开始计算所有场景指标")
-        cal_metric(args.jsonl_file, scenario=None)
+        # 执行评估（使用异步并发）
+        if args.scenario:
+            print(f"🚀 开始评估场景: {args.scenario}")
+            asyncio.run(perform_eval_async(args.jsonl_file, scenario=args.scenario, model=args.model, max_tasks=args.max_tasks, concurrency=args.concurrency, override=args.override))
+        else:
+            print(f"🚀 开始评估所有场景")
+            asyncio.run(perform_eval_async(args.jsonl_file, scenario=None, model=args.model, max_tasks=args.max_tasks, concurrency=args.concurrency, override=args.override))
+        
+        # 计算指标（输出到 output/eval_{文件名}.json）
+        if args.scenario:
+            print(f"\n📊 开始计算场景指标: {args.scenario}")
+            cal_metric(args.jsonl_file, scenario=args.scenario)
+        else:
+            print(f"\n📊 开始计算所有场景指标")
+            cal_metric(args.jsonl_file, scenario=None)
+        
+        # 如果是 VSP 文件且未跳过，添加工具使用检测
+        if not args.skip_vsp_tools and os.path.basename(args.jsonl_file).startswith('vsp_'):
+            print(f"\n{'='*80}")
+            print(f"🔧 检测 VSP 工具使用情况")
+            print(f"{'='*80}")
+            add_vsp_tool_usage_field(args.jsonl_file)
     
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

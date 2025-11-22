@@ -326,6 +326,8 @@ python mmsb_eval.py \
 
 ## 🔍 VSP 工具使用分析
 
+### 方法 1: 独立脚本分析（批量统计）
+
 使用 `check_vsp_tool_usage.py` 分析 VSP 是否使用了视觉工具（detection, segmentation 等）：
 
 ```bash
@@ -354,10 +356,37 @@ Illegal_Activitiy              775      16         759        2.1%
 ...
 ```
 
+### 方法 2: 集成到评估流程（为每条记录添加字段）
+
+`mmsb_eval.py` 会自动为 VSP 的 JSONL 文件添加 `used_vsp_tools` 字段：
+
+```bash
+# 完整流程：评估 + 计算指标 + 添加工具使用字段
+python mmsb_eval.py --jsonl_file output/vsp_xxx.jsonl
+
+# 仅添加工具使用字段（不评估）
+python mmsb_eval.py --jsonl_file output/vsp_xxx.jsonl --add_vsp_tools
+
+# 跳过工具使用检测
+python mmsb_eval.py --jsonl_file output/vsp_xxx.jsonl --skip_vsp_tools
+```
+
+添加后的 JSONL 记录会包含：
+```json
+{
+  "index": "18",
+  "pred": [...],
+  "origin": {...},
+  "used_vsp_tools": true,  // 新增字段
+  ...
+}
+```
+
 **检测原理：**
 - VSP 提供多种视觉分析工具（detection, segmentation, depth 等）
 - 当 VSP 使用工具时，会在 RESULT 部分生成 Python 代码块
 - 脚本通过检测 ````python` 代码块来判断是否使用了工具
+- 从 JSONL 文件名提取时间戳，定位对应的 `vsp_debug.log` 文件
 
 ## 📂 项目结构
 
