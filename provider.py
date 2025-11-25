@@ -122,11 +122,13 @@ class VSPProvider(BaseProvider):
     """
     def __init__(self, vsp_path: str = "~/code/VisualSketchpad", 
                  output_dir: str = "output/vsp_details",
-                 batch_timestamp: str = None):
+                 batch_timestamp: str = None,
+                 force_tools: bool = False):
         self.vsp_path = os.path.expanduser(vsp_path)
         self.agent_path = os.path.join(self.vsp_path, "agent")
         self.output_dir = output_dir  # VSP详细输出保存目录
         self.batch_timestamp = batch_timestamp  # 批量处理的时间戳
+        self.force_tools = force_tools  # 是否强制使用工具
         os.makedirs(self.output_dir, exist_ok=True)
         
     async def send(self, prompt_struct: Dict[str, Any], cfg: 'RunConfig') -> str:
@@ -194,6 +196,10 @@ class VSPProvider(BaseProvider):
                 images.append(part)
         
         text_content = text_content.strip()
+        
+        # 为VSP添加强制使用工具的指令（仅当force_tools=True时）
+        if self.force_tools and text_content:
+            text_content += "\n\nAlways use the segment_and_mark tool first to better understand the image."
 
         # 构建vision任务的request.json（使用绝对路径）
         task_data = {"query": text_content, "images": []}
@@ -387,11 +393,14 @@ def get_provider(cfg: 'RunConfig') -> BaseProvider:
     elif cfg.provider == "vsp":
         # 获取批量时间戳（必需）
         batch_timestamp = getattr(cfg, 'vsp_batch_timestamp', None)
+        # 获取是否强制使用工具的配置（默认False）
+        force_tools = getattr(cfg, 'vsp_force_tools', False)
         
         return VSPProvider(
             vsp_path=os.environ.get("VSP_PATH", "~/code/VisualSketchpad"),
             output_dir=os.environ.get("VSP_OUTPUT_DIR", "output/vsp_details"),
-            batch_timestamp=batch_timestamp
+            batch_timestamp=batch_timestamp,
+            force_tools=force_tools
         )
     else:
         raise ValueError(f"Unknown provider: {cfg.provider}")

@@ -52,6 +52,7 @@ class RunConfig:
     proxy: Optional[str] = None   # 若走代理，优先用环境变量
     rate_limit_qps: Optional[float] = None  # 简单速率限制（每秒请求数）
     max_tasks: Optional[int] = None  # 最大任务数（用于小批量测试，None 表示不限制）
+    vsp_force_tools: bool = False  # VSP是否强制使用工具（默认False）
 
 # ============ 数据与 Prompt ============
 
@@ -610,6 +611,10 @@ if __name__ == "__main__":
     parser.add_argument("--eval_concurrency", type=int, default=20,
                        help="评估并发数（默认: 20）")
     
+    # VSP特定参数
+    parser.add_argument("--vsp_force_tools", action="store_true",
+                       help="VSP强制使用工具：在prompt中添加指令要求LLM先使用segment_and_mark工具（默认: False）")
+    
     args = parser.parse_args()
     
     # 验证 image_types 必须在 MMSB_IMAGE_QUESTION_MAP 中
@@ -644,6 +649,7 @@ if __name__ == "__main__":
         save_path=args.save_path,
         proxy=args.proxy,
         max_tasks=args.max_tasks,
+        vsp_force_tools=args.vsp_force_tools,
     )
 
     # ============ 步骤 1: Request（生成答案）============
@@ -682,7 +688,7 @@ if __name__ == "__main__":
     
     # ============ 步骤 2 & 3: 评估答案并计算指标 ============
     if not args.skip_eval:
-        from mmsb_eval import perform_eval_async, cal_metric
+        from mmsb_eval import perform_eval_async, cal_metric, add_vsp_tool_usage_field
         
         print(f"{'='*80}")
         print(f"🔍 步骤 2/3: 评估答案安全性（Eval）")
@@ -704,6 +710,19 @@ if __name__ == "__main__":
         
         print(f"\n✅ 步骤 2 完成")
         print(f"   耗时: {format_time(eval_duration)}\n")
+        
+        # 如果使用了 VSP，自动添加工具使用字段
+        if cfg.provider == "vsp":
+            print(f"{'='*80}")
+            print(f"🔧 检测 VSP 工具使用情况")
+            print(f"{'='*80}\n")
+            
+            vsp_start = time.time()
+            add_vsp_tool_usage_field(final_jsonl_path)
+            vsp_duration = time.time() - vsp_start
+            
+            print(f"\n✅ VSP 工具检测完成")
+            print(f"   耗时: {format_time(vsp_duration)}\n")
         
         # 计算指标
         print(f"{'='*80}")
@@ -728,6 +747,8 @@ if __name__ == "__main__":
         print(f"总耗时: {format_time(total_duration)}")
         print(f"  - 生成答案: {format_time(request_duration)}")
         print(f"  - 评估答案: {format_time(eval_duration)}")
+        if cfg.provider == "vsp":
+            print(f"  - VSP 工具检测: {format_time(vsp_duration)}")
         print(f"  - 计算指标: {format_time(metric_duration)}")
         print(f"输出文件: {final_jsonl_path}")
         print(f"{'='*80}\n")
