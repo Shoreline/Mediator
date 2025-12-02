@@ -403,26 +403,36 @@ class ComtVspProvider(VSPProvider):
         self._load_comt_dataset()
     
     def _load_comt_dataset(self):
-        """加载CoMT数据集（优先使用HuggingFace，避免Git LFS问题）"""
+        """加载CoMT数据集（使用 hf_hub_download）"""
         try:
-            # 优先从HuggingFace加载（避免Git LFS指针文件问题）
-            print("📥 从HuggingFace加载CoMT数据集...")
+            # 使用 hf_hub_download 直接下载 data.jsonl
+            print("📥 从HuggingFace下载CoMT数据集...")
+            
             try:
-                from datasets import load_dataset
-                dataset = load_dataset("czh-up/CoMT", split="train")
-                self.comt_dataset = list(dataset)
-                print(f"✅ 成功从HuggingFace加载 {len(self.comt_dataset)} 条CoMT数据")
-                print(f"✅ 图片已包含在数据集中（自动处理）")
-                # HuggingFace数据集的图片在数据中，不需要额外的images_dir
-                self.comt_images_dir = "huggingface"  # 标记使用HuggingFace数据
-                return  # 加载成功，直接返回
+                from huggingface_hub import hf_hub_download
+                
+                # 下载 data.jsonl 文件
+                data_file = hf_hub_download(
+                    'czh-up/CoMT',
+                    filename='comt/data.jsonl',
+                    repo_type='dataset'
+                )
+                
+                # 读取 jsonl 文件
+                self.comt_dataset = []
+                with open(data_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.strip():
+                            self.comt_dataset.append(json.loads(line))
+                
+                print(f"✅ 成功加载 {len(self.comt_dataset)} 条CoMT数据")
+                self.comt_images_dir = "huggingface"  # 标记使用HuggingFace按需下载图片
+                return
                 
             except ImportError:
-                print("❌ 未安装datasets库，请运行: pip install datasets")
-                print("   回退到本地文件模式...")
+                print("❌ 未安装huggingface_hub库，请运行: pip install huggingface_hub")
             except Exception as e:
-                print(f"⚠️  从HuggingFace加载失败: {e}")
-                print("   回退到本地文件模式...")
+                print(f"⚠️  从HuggingFace下载失败: {e}")
             
             # 如果HuggingFace失败，尝试从本地加载
             if self.comt_data_path:
