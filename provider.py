@@ -475,6 +475,15 @@ class ComtVspProvider(VSPProvider):
         # 随机采样
         return random.choice(self.comt_dataset)
     
+    def _determine_task_type(self, prompt_struct: Dict[str, Any]) -> str:
+        """
+        确定任务类型
+        
+        CoMT任务通常涉及几何推理（形状、位置、空间关系等），
+        因此使用 'geo' 类型以获得更适合的工具集
+        """
+        return "geo"
+    
     def _build_vsp_task(self, prompt_struct: Dict[str, Any], task_dir: str, task_type: str) -> Dict[str, Any]:
         """
         构建双任务VSP输入：CoMT任务 + MM-SafetyBench任务
