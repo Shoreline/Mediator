@@ -200,8 +200,8 @@ def create_prompt(item: Item, *, prompt_config: Optional[Dict]=None, provider: s
     # 构建 meta 信息
     meta = {"category": item.category}
     
-    # VSP provider 需要额外的 index 信息
-    if provider == "vsp":
+    # VSP/CoMT-VSP provider 需要额外的 index 信息（用于匹配详细输出目录）
+    if provider in ["vsp", "comt_vsp"]:
         meta["index"] = item.index
     
     return {"parts": parts, "meta": meta}
@@ -437,10 +437,10 @@ async def send_with_retry(provider: BaseProvider, prompt_struct: Dict[str, Any],
     delay = 1.0
     for i in range(retries):
         try:
-            # 添加超时保护（120秒）
+            # 添加超时保护
             answer = await asyncio.wait_for(
                 provider.send(prompt_struct, cfg),
-                timeout=120.0
+                timeout=180.0
             )
             
             # 检测失败的答案模式（VSP 或 LLM 返回的不完整答案）
@@ -456,7 +456,7 @@ async def send_with_retry(provider: BaseProvider, prompt_struct: Dict[str, Any],
             return answer
             
         except asyncio.TimeoutError:
-            error_msg = f"[ERROR] API调用超时（120秒）"
+            error_msg = f"[ERROR] API调用超时"
             if i == retries - 1:
                 return error_msg
             print(f"⚠️  超时，重试中... ({i+1}/{retries})")
