@@ -41,7 +41,7 @@ from provider import BaseProvider, get_provider
 
 @dataclass
 class RunConfig:
-    provider: str                 # "openai" / "qwen" / "vsp"
+    provider: str                 # "openai" / "qwen" / "vsp" / "comt_vsp"
     model_name: str               # e.g., "gpt-4o", "qwen2.5-vl-7b-fp8"
     temperature: float = 0.0
     top_p: float = 1.0
@@ -52,7 +52,8 @@ class RunConfig:
     proxy: Optional[str] = None   # 若走代理，优先用环境变量
     rate_limit_qps: Optional[float] = None  # 简单速率限制（每秒请求数）
     max_tasks: Optional[int] = None  # 最大任务数（用于小批量测试，None 表示不限制）
-    vsp_force_tools: bool = False  # VSP是否强制使用工具（默认False）
+    comt_data_path: Optional[str] = None  # CoMT数据集路径（用于comt_vsp provider）
+    comt_sample_id: Optional[str] = None  # 固定的CoMT样本ID（如 'creation-10003'）
 
 # ============ 数据与 Prompt ============
 
@@ -480,7 +481,8 @@ async def run_pipeline(
         image_types = ["SD"]
     
     # 如果使用 VSP，生成批量时间戳
-    if cfg.provider == "vsp":
+    # 为VSP类型的provider设置批次时间戳
+    if cfg.provider in ["vsp", "comt_vsp"]:
         cfg.vsp_batch_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         print(f"🔧 VSP 时间戳: {cfg.vsp_batch_timestamp}")
     
@@ -574,7 +576,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--provider", default="openai")  # openai / qwen / vsp
+    parser.add_argument("--provider", default="openai")  # openai / qwen / vsp / comt_vsp
     parser.add_argument("--model_name", default="gpt-5")
     parser.add_argument("--json_glob", 
                        default="~/code/MM-SafetyBench/data/processed_questions/*.json",
@@ -611,9 +613,11 @@ if __name__ == "__main__":
     parser.add_argument("--eval_concurrency", type=int, default=20,
                        help="评估并发数（默认: 20）")
     
-    # VSP特定参数
-    parser.add_argument("--vsp_force_tools", action="store_true",
-                       help="VSP强制使用工具：在prompt中添加指令要求LLM先使用segment_and_mark工具（默认: False）")
+    # CoMT-VSP特定参数
+    parser.add_argument("--comt_data_path", default=None,
+                       help="CoMT数据集路径（data.jsonl文件）。默认从HuggingFace按需下载，不需要本地文件")
+    parser.add_argument("--comt_sample_id", default=None,
+                       help="指定固定的CoMT样本ID（如 'creation-10003'）。不指定则每个MM-Safety任务随机配对一个CoMT任务")
     
     args = parser.parse_args()
     
@@ -634,6 +638,9 @@ if __name__ == "__main__":
         if args.provider == "vsp":
             # VSP 使用 provider 名称作为前缀，并包含模型信息
             args.save_path = f"output/vsp_{safe_model_name}_{timestamp}.jsonl"
+        elif args.provider == "comt_vsp":
+            # CoMT-VSP 使用特定前缀
+            args.save_path = f"output/comt_vsp_{safe_model_name}_{timestamp}.jsonl"
         else:
             args.save_path = f"output/{safe_model_name}_{timestamp}.jsonl"
         print(f"📝 自动生成输出路径（临时）: {args.save_path}")
@@ -649,7 +656,8 @@ if __name__ == "__main__":
         save_path=args.save_path,
         proxy=args.proxy,
         max_tasks=args.max_tasks,
-        vsp_force_tools=args.vsp_force_tools,
+        comt_data_path=args.comt_data_path,
+        comt_sample_id=args.comt_sample_id,
     )
 
     # ============ 步骤 1: Request（生成答案）============
@@ -711,8 +719,8 @@ if __name__ == "__main__":
         print(f"\n✅ 步骤 2 完成")
         print(f"   耗时: {format_time(eval_duration)}\n")
         
-        # 如果使用了 VSP，自动添加工具使用字段
-        if cfg.provider == "vsp":
+        # 如果使用了 VSP 类型的provider，自动添加工具使用字段
+        if cfg.provider in ["vsp", "comt_vsp"]:
             print(f"{'='*80}")
             print(f"🔧 检测 VSP 工具使用情况")
             print(f"{'='*80}\n")
@@ -747,7 +755,7 @@ if __name__ == "__main__":
         print(f"总耗时: {format_time(total_duration)}")
         print(f"  - 生成答案: {format_time(request_duration)}")
         print(f"  - 评估答案: {format_time(eval_duration)}")
-        if cfg.provider == "vsp":
+        if cfg.provider in ["vsp", "comt_vsp"]:
             print(f"  - VSP 工具检测: {format_time(vsp_duration)}")
         print(f"  - 计算指标: {format_time(metric_duration)}")
         print(f"输出文件: {final_jsonl_path}")
