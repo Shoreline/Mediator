@@ -376,6 +376,57 @@ def format_time(seconds: float) -> str:
         minutes = int((seconds % 3600) // 60)
         return f"{hours}h{minutes}m"
 
+def clean_vsp_paths(vsp_output_dir: str) -> Dict[str, int]:
+    """
+    清理 VSP 输出目录中的绝对路径，将主目录路径替换为 ~
+    
+    Args:
+        vsp_output_dir: VSP 输出目录路径
+        
+    Returns:
+        统计信息字典：{'files_processed': int, 'files_modified': int, 'replacements': int}
+    """
+    home = os.path.expanduser("~")
+    stats = {'files_processed': 0, 'files_modified': 0, 'replacements': 0}
+    
+    if not os.path.exists(vsp_output_dir):
+        return stats
+    
+    # 递归处理所有 .json 和 .log 文件
+    for root, dirs, files in os.walk(vsp_output_dir):
+        for filename in files:
+            if not (filename.endswith('.json') or filename.endswith('.log')):
+                continue
+            
+            file_path = os.path.join(root, filename)
+            stats['files_processed'] += 1
+            
+            try:
+                # 读取文件内容
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # 检查是否包含需要替换的路径
+                if home not in content:
+                    continue
+                
+                # 统计并替换
+                count = content.count(home)
+                new_content = content.replace(home, "~")
+                
+                # 写回文件
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+                
+                stats['files_modified'] += 1
+                stats['replacements'] += count
+                
+            except Exception as e:
+                # 静默处理错误，不影响主流程
+                continue
+    
+    return stats
+
 def is_failed_answer(answer: str) -> bool:
     """
     检测答案是否为失败的模式
@@ -731,6 +782,38 @@ if __name__ == "__main__":
             
             print(f"\n✅ VSP 工具检测完成")
             print(f"   耗时: {format_time(vsp_duration)}\n")
+            
+            # 清理 VSP 输出中的绝对路径
+            print(f"{'='*80}")
+            print(f"🧹 清理 VSP 输出中的敏感路径")
+            print(f"{'='*80}\n")
+            
+            clean_start = time.time()
+            
+            # 确定 VSP 输出目录
+            if cfg.provider == "vsp":
+                vsp_output_base = "output/vsp_details"
+            elif cfg.provider == "comt_vsp":
+                vsp_output_base = "output/comt_vsp_details"
+            else:
+                vsp_output_base = "output/vsp_details"
+            
+            # 清理整个批次的输出目录
+            if hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
+                vsp_batch_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
+                clean_stats = clean_vsp_paths(vsp_batch_dir)
+                
+                print(f"📁 清理目录: {vsp_batch_dir}")
+                print(f"   处理文件: {clean_stats['files_processed']} 个")
+                print(f"   修改文件: {clean_stats['files_modified']} 个")
+                print(f"   替换路径: {clean_stats['replacements']} 处")
+            else:
+                print("⚠️  未找到 VSP 批次时间戳，跳过清理")
+            
+            clean_duration = time.time() - clean_start
+            
+            print(f"\n✅ 路径清理完成")
+            print(f"   耗时: {format_time(clean_duration)}\n")
         
         # 计算指标
         print(f"{'='*80}")
@@ -757,8 +840,42 @@ if __name__ == "__main__":
         print(f"  - 评估答案: {format_time(eval_duration)}")
         if cfg.provider in ["vsp", "comt_vsp"]:
             print(f"  - VSP 工具检测: {format_time(vsp_duration)}")
+            print(f"  - 路径清理: {format_time(clean_duration)}")
         print(f"  - 计算指标: {format_time(metric_duration)}")
         print(f"输出文件: {final_jsonl_path}")
         print(f"{'='*80}\n")
     else:
         print(f"\n⏭️  跳过评估步骤（使用 --skip_eval）")
+        
+        # 即使跳过评估，也要清理 VSP 路径
+        if cfg.provider in ["vsp", "comt_vsp"]:
+            print(f"\n{'='*80}")
+            print(f"🧹 清理 VSP 输出中的敏感路径")
+            print(f"{'='*80}\n")
+            
+            clean_start = time.time()
+            
+            # 确定 VSP 输出目录
+            if cfg.provider == "vsp":
+                vsp_output_base = "output/vsp_details"
+            elif cfg.provider == "comt_vsp":
+                vsp_output_base = "output/comt_vsp_details"
+            else:
+                vsp_output_base = "output/vsp_details"
+            
+            # 清理整个批次的输出目录
+            if hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
+                vsp_batch_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
+                clean_stats = clean_vsp_paths(vsp_batch_dir)
+                
+                print(f"📁 清理目录: {vsp_batch_dir}")
+                print(f"   处理文件: {clean_stats['files_processed']} 个")
+                print(f"   修改文件: {clean_stats['files_modified']} 个")
+                print(f"   替换路径: {clean_stats['replacements']} 处")
+            else:
+                print("⚠️  未找到 VSP 批次时间戳，跳过清理")
+            
+            clean_duration = time.time() - clean_start
+            
+            print(f"\n✅ 路径清理完成")
+            print(f"   耗时: {format_time(clean_duration)}\n")
