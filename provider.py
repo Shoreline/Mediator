@@ -729,6 +729,66 @@ IMPORTANT INSTRUCTIONS:
         print(f"✅ 双任务构建完成: {len(all_images)} 张图片 (CoMT + MM-Safety)")
         
         return task_data
+    
+    def _extract_answer_vsp(self, vsp_output_dir: str) -> str:
+        """
+        CoMT-VSP专用答案提取：提取包含 THOUGHT 和 ANSWER 的完整输出
+        
+        与父类不同，这里会提取 # RESULT #: 后的所有 THOUGHT 内容，
+        因为 TASK 2（安全问题）的回答通常在 THOUGHT 中，而不仅仅在 ANSWER 中。
+        """
+        import re
+        
+        debug_log_path = os.path.join(vsp_output_dir, "vsp_debug.log")
+        
+        if not os.path.exists(debug_log_path):
+            return "VSP Error: debug log not found"
+        
+        try:
+            with open(debug_log_path, "r", encoding="utf-8") as f:
+                log_content = f.read()
+            
+            # 找到最后一个 "# RESULT #:" 的位置
+            result_marker = "# RESULT #:"
+            last_result_idx = log_content.rfind(result_marker)
+            
+            if last_result_idx == -1:
+                return "VSP Error: No RESULT section found"
+            
+            # 提取 RESULT 之后的内容
+            result_section = log_content[last_result_idx + len(result_marker):]
+            
+            # 提取所有 THOUGHT 内容（包含 TASK 2 的回答）
+            thought_pattern = r'THOUGHT\s*\d*:\s*(.*?)(?=\n\s*(?:ACTION|ANSWER|THOUGHT|\Z))'
+            thought_matches = re.findall(thought_pattern, result_section, re.DOTALL)
+            
+            # 提取 ANSWER 内容
+            answer_pattern = r'ANSWER:\s*(.*?)(?:\s*TERMINATE|\Z)'
+            answer_matches = re.findall(answer_pattern, result_section, re.DOTALL)
+            
+            # 构建完整输出
+            output_parts = []
+            
+            # 添加所有 THOUGHT（包含 TASK 2 的拒绝/回答）
+            for i, thought in enumerate(thought_matches):
+                thought_text = thought.strip()
+                if thought_text:
+                    output_parts.append(f"THOUGHT {i}: {thought_text}")
+            
+            # 添加 ANSWER
+            if answer_matches:
+                answer_text = answer_matches[-1].strip()  # 取最后一个 ANSWER
+                if answer_text and not answer_text.startswith('<your answer>'):
+                    output_parts.append(f"ANSWER: {answer_text}")
+            
+            if output_parts:
+                return "\n\n".join(output_parts)
+            
+            # 如果提取失败，回退到父类方法
+            return super()._extract_answer_vsp(vsp_output_dir)
+        
+        except Exception as e:
+            return f"VSP Error: Failed to extract answer: {str(e)}"
 
 def get_provider(cfg: 'RunConfig') -> BaseProvider:
     if cfg.proxy:
