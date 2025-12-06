@@ -37,6 +37,35 @@ from typing import Any, Dict, List, Optional, AsyncIterator, Iterable
 
 from provider import BaseProvider, get_provider
 
+# ============ Task Counter（单调递增的任务编号）============
+
+TASK_COUNTER_FILE = "output/.task_counter"
+
+def get_next_task_num() -> int:
+    """
+    获取下一个任务编号（单调递增，从1开始）
+    
+    Returns:
+        下一个可用的任务编号
+    """
+    os.makedirs("output", exist_ok=True)
+    
+    if os.path.exists(TASK_COUNTER_FILE):
+        try:
+            with open(TASK_COUNTER_FILE, 'r') as f:
+                current = int(f.read().strip())
+        except (ValueError, IOError):
+            current = 0
+    else:
+        current = 0
+    
+    next_num = current + 1
+    
+    with open(TASK_COUNTER_FILE, 'w') as f:
+        f.write(str(next_num))
+    
+    return next_num
+
 # ============ 配置 ============
 
 @dataclass
@@ -681,13 +710,20 @@ if __name__ == "__main__":
     
     # 如果未指定 save_path，自动生成带时间戳的文件名（不含任务数）
     auto_generated_save_path = args.save_path is None
+    task_num = None  # 任务编号（用于最终重命名）
+    
     if auto_generated_save_path:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # 清理 model 中可能不适合文件名的字符
         safe_model_name = re.sub(r'[^\w\-.]', '_', args.model)
         
+        # 获取下一个任务编号
+        task_num = get_next_task_num()
+        print(f"🔢 任务编号: {task_num}")
+        
         if args.provider == "vsp":
             # VSP 使用 provider 名称作为前缀，并包含模型信息
+            # 临时文件名（不含 task_num 和 tasks_X）
             args.save_path = f"output/vsp_{safe_model_name}_{timestamp}.jsonl"
         elif args.provider == "comt_vsp":
             # CoMT-VSP 使用特定前缀
@@ -729,17 +765,39 @@ if __name__ == "__main__":
     request_duration = time.time() - request_start
     
     # 如果是自动生成的文件名，根据实际任务数重命名
+    # 新命名格式：{task_num}_tasks_{total}_{原文件名}
     final_jsonl_path = args.save_path
-    if auto_generated_save_path and total_tasks > 0:
+    vsp_batch_dir_renamed = None  # 重命名后的 VSP 详细输出目录
+    
+    if auto_generated_save_path and total_tasks > 0 and task_num is not None:
         old_path = args.save_path
-        # 在文件扩展名之前插入 _tasks_xxx
-        base_path = old_path.rsplit('.', 1)[0]  # 去掉 .jsonl
-        new_path = f"{base_path}_tasks_{total_tasks}.jsonl"
+        # 提取文件名和目录
+        dir_path = os.path.dirname(old_path)
+        filename = os.path.basename(old_path)
+        
+        # 新命名格式：{task_num}_tasks_{total}_{原文件名}
+        new_filename = f"{task_num}_tasks_{total_tasks}_{filename}"
+        new_path = os.path.join(dir_path, new_filename)
         
         if os.path.exists(old_path):
             os.rename(old_path, new_path)
             final_jsonl_path = new_path
             print(f"✅ 文件已重命名: {new_path}")
+        
+        # 如果使用了 VSP，同时重命名详细输出目录
+        if cfg.provider in ["vsp", "comt_vsp"] and hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
+            if cfg.provider == "vsp":
+                vsp_output_base = "output/vsp_details"
+            else:
+                vsp_output_base = "output/comt_vsp_details"
+            
+            old_vsp_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
+            new_vsp_dir = os.path.join(vsp_output_base, f"{task_num}_tasks_{total_tasks}_vsp_{cfg.vsp_batch_timestamp}")
+            
+            if os.path.exists(old_vsp_dir):
+                os.rename(old_vsp_dir, new_vsp_dir)
+                vsp_batch_dir_renamed = new_vsp_dir
+                print(f"✅ VSP 详细输出目录已重命名: {new_vsp_dir}")
     
     print(f"\n✅ 步骤 1 完成")
     print(f"   耗时: {format_time(request_duration)}")
@@ -790,17 +848,25 @@ if __name__ == "__main__":
             
             clean_start = time.time()
             
-            # 确定 VSP 输出目录
-            if cfg.provider == "vsp":
-                vsp_output_base = "output/vsp_details"
-            elif cfg.provider == "comt_vsp":
-                vsp_output_base = "output/comt_vsp_details"
+            # 使用重命名后的目录（如果有）
+            if vsp_batch_dir_renamed:
+                vsp_batch_dir = vsp_batch_dir_renamed
             else:
-                vsp_output_base = "output/vsp_details"
+                # 确定 VSP 输出目录
+                if cfg.provider == "vsp":
+                    vsp_output_base = "output/vsp_details"
+                elif cfg.provider == "comt_vsp":
+                    vsp_output_base = "output/comt_vsp_details"
+                else:
+                    vsp_output_base = "output/vsp_details"
+                
+                if hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
+                    vsp_batch_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
+                else:
+                    vsp_batch_dir = None
             
             # 清理整个批次的输出目录
-            if hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
-                vsp_batch_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
+            if vsp_batch_dir:
                 clean_stats = clean_vsp_paths(vsp_batch_dir)
                 
                 print(f"📁 清理目录: {vsp_batch_dir}")
@@ -855,17 +921,25 @@ if __name__ == "__main__":
             
             clean_start = time.time()
             
-            # 确定 VSP 输出目录
-            if cfg.provider == "vsp":
-                vsp_output_base = "output/vsp_details"
-            elif cfg.provider == "comt_vsp":
-                vsp_output_base = "output/comt_vsp_details"
+            # 使用重命名后的目录（如果有）
+            if vsp_batch_dir_renamed:
+                vsp_batch_dir = vsp_batch_dir_renamed
             else:
-                vsp_output_base = "output/vsp_details"
+                # 确定 VSP 输出目录
+                if cfg.provider == "vsp":
+                    vsp_output_base = "output/vsp_details"
+                elif cfg.provider == "comt_vsp":
+                    vsp_output_base = "output/comt_vsp_details"
+                else:
+                    vsp_output_base = "output/vsp_details"
+                
+                if hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
+                    vsp_batch_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
+                else:
+                    vsp_batch_dir = None
             
             # 清理整个批次的输出目录
-            if hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
-                vsp_batch_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
+            if vsp_batch_dir:
                 clean_stats = clean_vsp_paths(vsp_batch_dir)
                 
                 print(f"📁 清理目录: {vsp_batch_dir}")
