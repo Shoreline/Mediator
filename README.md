@@ -35,8 +35,10 @@ python view_jsonl.py output/comt_vsp_2025-12-02_15-08-03.jsonl --to_json results
 - **并发处理**：支持高并发推理，可配置并发数量
 - **自动重试**：失败任务自动重试，支持失败模式检测
 - **批量处理**：支持批量处理 MM-SafetyBench 数据集
-- **结果保存**：自动保存结果到 JSONL 格式
+- **批量运行**：支持通过 `batch_request.py` 组合不同参数批量运行
+- **结果保存**：自动保存结果到 JSONL 格式，文件名包含任务编号便于追踪
 - **进度追踪**：实时显示处理进度和预估剩余时间
+- **报告生成**：自动生成包含图表的 HTML 评估报告
 
 ## 🚀 快速开始
 
@@ -122,7 +124,11 @@ python request.py \
   --max_tasks 10
 ```
 
-输出文件会自动命名为：`output/gpt-4o_2025-11-01_12-00-00.jsonl`
+输出文件会自动命名为：`output/{task_num}_tasks_{total}_{model}_{timestamp}.jsonl`
+
+例如：`output/1_tasks_10_gpt-4o_2025-11-01_12-00-00.jsonl`
+- `task_num`: 单调递增的任务编号（从 1 开始）
+- `total`: 实际处理的任务数
 
 #### 2. 使用 OpenRouter 调用 Claude
 
@@ -147,8 +153,8 @@ python request.py \
   --max_tasks 100
 ```
 
-输出文件：`output/vsp_2025-11-01_12-00-00.jsonl`
-详细输出：`output/vsp_details/vsp_2025-11-01_12-00-00/`
+输出文件：`output/{task_num}_tasks_{total}_vsp_{timestamp}.jsonl`
+详细输出：`output/vsp_details/{task_num}_tasks_{total}_vsp_{timestamp}/`
 
 #### 4. 使用 CoMT-VSP 处理（增强型双任务模式）
 
@@ -180,8 +186,8 @@ python request.py \
   --max_tasks 10
 ```
 
-输出文件：`output/comt_vsp_2025-11-01_12-00-00.jsonl`
-详细输出：`output/comt_vsp_details/vsp_2025-11-01_12-00-00/`
+输出文件：`output/{task_num}_tasks_{total}_comt_vsp_{timestamp}.jsonl`
+详细输出：`output/comt_vsp_details/{task_num}_tasks_{total}_vsp_{timestamp}/`
 
 > 💡 **CoMT-VSP 说明**：同时向 LLM 提出两个任务：
 > - TASK 1: CoMT 几何推理任务（强制使用 VSP 几何工具）
@@ -347,18 +353,22 @@ VSP (VisualSketchpad) 和 CoMT-VSP 是本地多模态 AI 工具，与其他 Prov
 使用 VSP 或 CoMT-VSP 时，会产生两个输出：
 
 1. **结果摘要文件**：
-   - VSP: `output/vsp_{timestamp}.jsonl`
-   - CoMT-VSP: `output/comt_vsp_{timestamp}.jsonl`
+   - VSP: `output/{task_num}_tasks_{N}_vsp_{model}_{timestamp}.jsonl`
+   - CoMT-VSP: `output/{task_num}_tasks_{N}_comt_vsp_{model}_{timestamp}.jsonl`
 
 2. **详细输出目录**：
-   - VSP: `output/vsp_details/vsp_{timestamp}/`
-   - CoMT-VSP: `output/comt_vsp_details/vsp_{timestamp}/`
+   - VSP: `output/vsp_details/{task_num}_tasks_{N}_vsp_{timestamp}/`
+   - CoMT-VSP: `output/comt_vsp_details/{task_num}_tasks_{N}_vsp_{timestamp}/`
    - 每个任务的完整输出
-   - 目录结构：`vsp_{timestamp}/{category}/{index}/`
+   - 目录结构：`{task_num}_tasks_{N}_vsp_{timestamp}/{category}/{index}/`
    - 包含：
      - `input/`: VSP 的输入文件（`request.json` / `ex.json`, `image_*.jpg`）
      - `output/`: VSP 的输出文件（`vsp_debug.log`, `output.json` 等）
      - `mediator_metadata.json`: Mediator 保存的元数据
+
+**命名说明**：
+- `task_num`: 单调递增的任务编号（从 1 开始，保存在 `output/.task_counter`）
+- `N`: 实际处理的任务数
 
 ### CoMT-VSP 双任务模式
 
@@ -422,6 +432,85 @@ python tests/test_vsp_provider.py
 
 更多测试说明请参考 `tests/README.md`。
 
+## 🔄 批量运行（batch_request.py）
+
+使用 `batch_request.py` 可以组合不同参数批量运行多次 `request.py`。
+
+### 配置参数组合
+
+编辑 `batch_request.py` 中的 `args_combo` 列表：
+
+```python
+args_combo = [
+    # 固定参数（字符串）：所有组合都会使用
+    "--categories 12-Health_Consultation --max_tasks 10",
+    
+    # 参数变体（列表）：会遍历每个变体
+    [
+        '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-instruct"',
+        '--provider openrouter --model "google/gemini-2.5-flash"',
+    ],
+]
+```
+
+### 运行批量任务
+
+```bash
+python batch_request.py
+```
+
+### 功能特性
+
+- **笛卡尔积组合**：自动生成所有参数变体的组合
+- **实时进度显示**：每个子任务的进度实时显示
+- **详细结果汇总**：批量完成后打印所有任务的详细信息
+- **日志保存**：所有输出保存到 `output/batch-{task_num}_{total}_{timestamp}.log`
+- **自动生成报告**：批量完成后自动调用 `generate_report_with_charts.py` 生成报告
+
+### 配置选项
+
+```python
+STOP_ON_ERROR = False    # 遇到错误时是否停止
+VERBOSE = True           # 是否显示详细输出
+GENERATE_REPORT = True   # 是否在完成后生成报告
+```
+
+### 输出文件
+
+批量运行完成后会生成：
+- **日志文件**: `output/batch-{task_num}_{total}_{timestamp}.log`
+- **HTML 报告**: `output/batch_{task_num}_evaluation_report.html`
+- **各任务的输出文件**: `output/{task_num}_tasks_{total}_*.jsonl` 和对应的 CSV 文件
+
+## 📊 生成评估报告（generate_report_with_charts.py）
+
+生成包含图表的 HTML 评估报告。
+
+### 基本用法
+
+```bash
+# 使用默认逻辑，加载所有符合条件的评估文件
+python generate_report_with_charts.py
+
+# 指定要处理的评估文件
+python generate_report_with_charts.py --files output/1_eval_tasks_10_*.csv output/2_eval_tasks_10_*.csv
+
+# 指定输出报告路径
+python generate_report_with_charts.py --output output/my_report.html
+```
+
+### 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--files` | `None` | 指定要处理的评估 CSV 文件列表。不指定则使用默认逻辑 |
+| `--output` | `output/evaluation_report.html` | 输出报告文件路径 |
+
+### 输出内容
+
+- **HTML 报告**: 包含所有模型的攻击率对比图表
+- **图表文件**: `output/chart_*.png`
+
 ## 🔄 集成流水线（推荐）
 
 `request.py` 已经集成了完整的评估流程，**默认会自动执行评估和指标计算**，无需手动调用 `mmsb_eval.py`。
@@ -453,11 +542,16 @@ python request.py --max_tasks 50 --eval_model "gpt-5" --eval_concurrency 30
 
 运行完整流水线后，会生成：
 
-1. **JSONL 文件**: `output/{model_name}_{timestamp}_tasks_{N}.jsonl`
+1. **JSONL 文件**: `output/{task_num}_tasks_{N}_{model_name}_{timestamp}.jsonl`
    - 包含所有问题、答案和评估结果
+   - `task_num`: 单调递增的任务编号（从 1 开始）
 
-2. **CSV 文件**: `output/eval_{model_name}_{timestamp}_tasks_{N}.csv`
+2. **CSV 文件**: `output/{task_num}_eval_tasks_{N}_{model_name}_{timestamp}.csv`
    - 包含评估指标汇总表
+
+3. **VSP 详细输出** (仅 VSP/CoMT-VSP):
+   - `output/vsp_details/{task_num}_tasks_{N}_vsp_{timestamp}/`
+   - `output/comt_vsp_details/{task_num}_tasks_{N}_vsp_{timestamp}/`
 
 ### 与传统两步流程对比
 
@@ -608,9 +702,13 @@ Mediator/
 ├── README.md                    # 本文件
 ├── requirements.txt             # Python 依赖
 ├── request.py                   # 主要的推理脚本
+├── batch_request.py             # 批量运行脚本
 ├── provider.py                  # Provider 接口和实现
 ├── mmsb_eval.py                 # 评估脚本
+├── generate_report_with_charts.py  # 报告生成脚本
+├── check_vsp_tool_usage.py      # VSP 工具使用分析
 ├── view_jsonl.py                # JSONL 查看工具
+├── COMT_GUIDE.md                # CoMT-VSP 使用指南
 ├── tests/                       # 测试脚本
 │   ├── README.md
 │   ├── test_provider.py
@@ -618,8 +716,14 @@ Mediator/
 │   └── ...
 ├── output/                      # 输出目录
 │   ├── *.jsonl                 # 推理结果
-│   └── vsp_details/            # VSP 详细输出
-└── docs/                        # 文档（如果有）
+│   ├── *.csv                   # 评估指标
+│   ├── *.log                   # 批量运行日志
+│   ├── *.html                  # 评估报告
+│   ├── chart_*.png             # 图表文件
+│   ├── .task_counter           # 任务计数器
+│   ├── vsp_details/            # VSP 详细输出
+│   └── comt_vsp_details/       # CoMT-VSP 详细输出
+└── example/                     # 示例文件
 ```
 
 ## 🔍 故障排除
