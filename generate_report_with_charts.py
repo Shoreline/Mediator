@@ -531,12 +531,63 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
     
     print(f"✅ 生成 HTML 报告: {output_file}")
 
-def main():
+def load_specific_data(eval_files: list):
+    """
+    加载指定的评估文件数据，按品牌分组
+    
+    Args:
+        eval_files: 评估文件路径列表
+        
+    Returns:
+        {brand: [(model_display_name, timestamp, data), ...]}
+    """
+    all_data = defaultdict(list)
+    
+    for filepath in eval_files:
+        if not os.path.exists(filepath):
+            print(f"⚠️  文件不存在: {filepath}")
+            continue
+        
+        filename = os.path.basename(filepath)
+        
+        # 解析文件名
+        brand, model_display_name, timestamp = parse_filename(filename)
+        
+        # 读取数据
+        data = read_csv_file(filepath)
+        
+        if data:
+            all_data[brand].append({
+                'model_display_name': model_display_name,
+                'timestamp': timestamp,
+                'data': data,
+                'filename': filename
+            })
+    
+    return all_data
+
+
+def main(eval_files: list = None, output_file: str = None):
+    """
+    主函数
+    
+    Args:
+        eval_files: 指定的评估文件列表，如果为 None 则使用默认逻辑加载所有符合条件的文件
+        output_file: 输出报告文件路径，如果为 None 则使用默认路径
+    """
     print("📊 开始生成评估报告...\n")
     
-    # 加载所有数据
+    # 加载数据
     print("📖 加载评估数据...")
-    all_data = load_all_data()
+    if eval_files:
+        print(f"   指定了 {len(eval_files)} 个评估文件")
+        all_data = load_specific_data(eval_files)
+    else:
+        all_data = load_all_data()
+    
+    if not all_data:
+        print("⚠️  没有找到有效的评估数据")
+        return
     
     print(f"✅ 找到 {len(all_data)} 个品牌")
     for brand, models in all_data.items():
@@ -545,12 +596,24 @@ def main():
     print("\n🎨 生成图表和报告...")
     
     # 生成 HTML 报告
-    generate_html_report(all_data)
+    report_output = output_file or 'output/evaluation_report.html'
+    generate_html_report(all_data, output_file=report_output)
     
     print("\n🎉 完成！")
-    print("📄 HTML 报告: output/evaluation_report.html")
+    print(f"📄 HTML 报告: {report_output}")
     print("🖼️  图表文件: output/chart_*.png")
 
+
 if __name__ == "__main__":
-    main()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="生成包含图表的评估报告")
+    parser.add_argument("--files", nargs='+', default=None,
+                       help="指定要处理的评估 CSV 文件列表。不指定则使用默认逻辑加载所有符合条件的文件")
+    parser.add_argument("--output", default=None,
+                       help="输出报告文件路径（默认: output/evaluation_report.html）")
+    
+    args = parser.parse_args()
+    
+    main(eval_files=args.files, output_file=args.output)
 
