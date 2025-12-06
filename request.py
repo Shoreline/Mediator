@@ -15,13 +15,13 @@ python request.py --max_tasks 10
 python request.py --max_tasks 10 --skip_eval
 
 # 3. 使用不同的模型
-python request.py --model_name "gpt-4o" --max_tasks 50
+python request.py --model "gpt-4o" --max_tasks 50
 
 # 4. 使用不同的评估模型
 python request.py --max_tasks 50 --eval_model "gpt-5"
 
 # 5. 使用 OpenRouter
-python request.py --provider openrouter --model_name "anthropic/claude-3.5-sonnet" --max_tasks 10
+python request.py --provider openrouter --model "anthropic/claude-3.5-sonnet" --max_tasks 10
 
 # 6. 自定义数据路径
 python request.py \
@@ -42,7 +42,7 @@ from provider import BaseProvider, get_provider
 @dataclass
 class RunConfig:
     provider: str                 # "openai" / "qwen" / "vsp" / "comt_vsp"
-    model_name: str               # e.g., "gpt-4o", "qwen2.5-vl-7b-fp8"
+    model: str                    # e.g., "gpt-4o", "qwen2.5-vl-7b-fp8"
     temperature: float = 0.0
     top_p: float = 1.0
     max_tokens: int = 2048
@@ -255,7 +255,7 @@ def build_record_for_disk(item: Item, prompt_struct: Dict[str, Any], answer_text
             "prompt_parts": prompt_parts_for_disk
         },
         "meta": {
-            "model": cfg.model_name,
+            "model": cfg.model,
             "params": {
                 "temperature": cfg.temperature,
                 "top_p": cfg.top_p,
@@ -598,7 +598,7 @@ async def run_pipeline(
     print(f"{'='*80}")
     print(f"总任务数: {total_tasks}")
     print(f"并发数: {cfg.consumer_size}")
-    print(f"模型: {cfg.model_name}")
+    print(f"模型: {cfg.model}")
     print(f"输出路径: {cfg.save_path}")
     print(f"{'='*80}\n")
     
@@ -628,7 +628,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", default="openai")  # openai / qwen / vsp / comt_vsp
-    parser.add_argument("--model_name", default="gpt-5")
+    parser.add_argument("--model", default="gpt-5")
     parser.add_argument("--json_glob", 
                        default="~/code/MM-SafetyBench/data/processed_questions/*.json",
                        help="JSON 文件的 glob 模式（默认: ~/code/MM-SafetyBench/data/processed_questions/*.json）")
@@ -636,7 +636,7 @@ if __name__ == "__main__":
                        default="~/Downloads/MM-SafetyBench_imgs/",
                        help="图片基础目录（默认: ~/Downloads/MM-SafetyBench_imgs/）")
     parser.add_argument("--save_path", default=None,
-                       help="输出路径（不指定则自动生成：output/{model_name}_{timestamp}.jsonl）")
+                       help="输出路径（不指定则自动生成：output/{model}_{timestamp}.jsonl）")
     parser.add_argument("--temp", type=float, default=0.0)
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--max_tokens", type=int, default=2048)
@@ -683,8 +683,8 @@ if __name__ == "__main__":
     auto_generated_save_path = args.save_path is None
     if auto_generated_save_path:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        # 清理 model_name 中可能不适合文件名的字符
-        safe_model_name = re.sub(r'[^\w\-.]', '_', args.model_name)
+        # 清理 model 中可能不适合文件名的字符
+        safe_model_name = re.sub(r'[^\w\-.]', '_', args.model)
         
         if args.provider == "vsp":
             # VSP 使用 provider 名称作为前缀，并包含模型信息
@@ -698,7 +698,7 @@ if __name__ == "__main__":
 
     cfg = RunConfig(
         provider=args.provider,
-        model_name=args.model_name,
+        model=args.model,
         temperature=args.temp,
         top_p=args.top_p,
         max_tokens=args.max_tokens,

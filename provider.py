@@ -32,7 +32,7 @@ class OpenAIProvider(BaseProvider):
 
         # 构建请求参数
         request_params = {
-            "model": cfg.model_name,
+            "model": cfg.model,
             "temperature": cfg.temperature,
             "top_p": cfg.top_p,
             "max_output_tokens": cfg.max_tokens,
@@ -83,7 +83,7 @@ class OpenRouterProvider(BaseProvider):
 
         # 构建请求参数
         request_params = {
-            "model": cfg.model_name,  # 如 "openai/gpt-4o" 或 "anthropic/claude-3.5-sonnet"
+            "model": cfg.model,  # 如 "openai/gpt-4o" 或 "anthropic/claude-3.5-sonnet"
             "messages": [{"role": "user", "content": content_blocks}],
             "temperature": cfg.temperature,
             "top_p": cfg.top_p,
@@ -170,7 +170,7 @@ class VSPProvider(BaseProvider):
         task_data = self._build_vsp_task(prompt_struct, vsp_input_dir, task_type)
         
         # 调用VSP（输出保存到vsp_output_dir）
-        result = await self._call_vsp(vsp_input_dir, vsp_output_dir, task_type)
+        result = await self._call_vsp(vsp_input_dir, vsp_output_dir, task_type, model=cfg.model)
         
         # 从 debug log 中提取答案（VSP 专用方法）
         answer = self._extract_answer_vsp(vsp_output_dir)
@@ -221,12 +221,15 @@ class VSPProvider(BaseProvider):
         """确定任务类型，目前只支持vision"""
         return "vision"
     
-    async def _call_vsp(self, task_dir: str, output_dir: str, task_type: str) -> Dict[str, Any]:
+    async def _call_vsp(self, task_dir: str, output_dir: str, task_type: str, model: str = None) -> Dict[str, Any]:
         """调用VSP工具（使用VSP自带python解释器 + run_agent 入口）"""
 
         # 使用相对路径的python（让shell找VSP venv的python）
         # 通过 -c 调用 run_agent，使用f-string直接嵌入参数
-        py_cmd = f'from main import run_agent; run_agent("{task_dir}", "{output_dir}", task_type="{task_type}")'
+        if model:
+            py_cmd = f'from main import run_agent; run_agent("{task_dir}", "{output_dir}", task_type="{task_type}", model="{model}")'
+        else:
+            py_cmd = f'from main import run_agent; run_agent("{task_dir}", "{output_dir}", task_type="{task_type}")'
         cmd = ["python", "-c", py_cmd]
 
         # 设置工作目录为 VSP 的 agent 目录，确保 imports 正确
