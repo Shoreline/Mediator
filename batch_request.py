@@ -92,12 +92,16 @@ def close_logging():
 # - 列表：需要遍历的参数变体
 args_combo = [
     # 固定参数：类别和任务数
-    "--categories 12-Health_Consultation --max_tasks 2",
+    "--categories 12-Health_Consultation 01-Illegal_Activitiy",
     
     # 需要遍历的参数变体：不同的 provider 和 model 组合
     [
         '--provider openrouter --model "google/gemini-2.5-flash"',
         '--provider openrouter --model "qwen/qwen3-vl-235b-a22b-instruct"',
+        '--provider openrouter --model "openai/gpt-5"',
+        '--provider comt_vsp --model "google/gemini-2.5-flash" --comt_sample_id creation-10003',
+        '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-instruct" --comt_sample_id creation-10003',
+        '--provider comt_vsp --model "openai/gpt-5" --comt_sample_id creation-10003',        
     ],
 ]
 

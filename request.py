@@ -520,7 +520,7 @@ async def send_with_retry(provider: BaseProvider, prompt_struct: Dict[str, Any],
             # 添加超时保护
             answer = await asyncio.wait_for(
                 provider.send(prompt_struct, cfg),
-                timeout=180.0
+                timeout=600.0
             )
             
             # 检测失败的答案模式（VSP 或 LLM 返回的不完整答案）

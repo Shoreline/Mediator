@@ -106,27 +106,24 @@ def parse_filename(filename):
                 timestamp = f"{parts[i]}_{parts[i+1]}"
                 break
     
+    # 检查是否使用了 CoMT/VSP（comt_vsp）或普通 VSP
+    is_comt_vsp = 'comt_vsp' in name
+    is_vsp = 'vsp' in name and not is_comt_vsp
+    vsp_suffix = ' + CoMT/VSP' if is_comt_vsp else (' + VSP' if is_vsp else '')
+    
     # 识别品牌和生成显示名称
     if 'google_gemini' in name or 'gemini' in name:
         brand = 'Gemini'
-        if 'vsp' in name:
-            model_display_name = 'Gemini-2.5-Flash + VSP'
-        elif name.startswith('mini_'):
+        if name.startswith('mini_'):
             model_display_name = 'Gemini-2.5-Flash (Mini-Eval)'
         else:
-            model_display_name = 'Gemini-2.5-Flash'
+            model_display_name = 'Gemini-2.5-Flash' + vsp_suffix
     
     elif 'gpt-5' in name or 'gpt5' in name:
         brand = 'OpenAI'
-        if 'vsp' in name:
-            model_display_name = 'GPT-5 + VSP'
-        else:
-            model_display_name = 'GPT-5'
+        model_display_name = 'GPT-5' + vsp_suffix
     
     elif 'qwen' in name:
-        # 先检查是否是 VSP + Qwen
-        is_vsp = 'vsp' in name
-        
         # 检查是否是 Thinking 模式
         is_thinking = 'thinking' in name
         
@@ -155,20 +152,13 @@ def parse_filename(filename):
         else:
             base_name = 'Qwen3-VL (Unknown)'
         
-        # 如果是 VSP，添加后缀
-        if is_vsp:
-            model_display_name = f'{base_name} + VSP'
-        else:
-            model_display_name = base_name
+        model_display_name = base_name + vsp_suffix
     
     elif 'internvl' in name:
         brand = 'InternVL'
-        if 'vsp' in name:
-            model_display_name = 'InternVL3-78B + VSP'
-        else:
-            model_display_name = 'InternVL3-78B'
+        model_display_name = 'InternVL3-78B' + vsp_suffix
     
-    elif 'vsp' in name:
+    elif 'comt_vsp' in name or 'vsp' in name:
         brand = 'VSP'
         model_display_name = 'VSP (Unknown Model)'
     
@@ -230,7 +220,8 @@ def average_multiple_runs(models_data):
         models_data: [{model_display_name, timestamp, data}, ...]
     
     Returns:
-        {display_name: {category: avg_attack_rate}}
+        averaged_data: {display_name: {category: avg_attack_rate}}
+        tested_categories: {display_name: set of actually tested categories}
     """
     # 按完整模型名分组
     model_groups = defaultdict(list)
@@ -242,8 +233,12 @@ def average_multiple_runs(models_data):
     
     # 计算平均值（如果同一个模型有多次运行，取平均）
     averaged_data = {}
+    tested_categories = {}  # 记录每个模型实际测试了哪些类别
+    
     for model_name, items in model_groups.items():
         averaged_data[model_name] = {}
+        tested_categories[model_name] = set()
+        
         for category in CATEGORIES:
             rates = []
             for item in items:
@@ -252,12 +247,13 @@ def average_multiple_runs(models_data):
             
             if rates:
                 averaged_data[model_name][category] = np.mean(rates)
+                tested_categories[model_name].add(category)  # 记录实际测试的类别
             else:
                 averaged_data[model_name][category] = 0.0
     
-    return averaged_data
+    return averaged_data, tested_categories
 
-def create_bar_chart(brand, averaged_data, output_file):
+def create_bar_chart(brand, averaged_data, output_file, tested_categories=None):
     """
     创建柱状图
     
@@ -265,13 +261,32 @@ def create_bar_chart(brand, averaged_data, output_file):
         brand: 品牌名称（如 Qwen, Gemini）
         averaged_data: {model_name: {category: attack_rate}}
         output_file: 输出文件路径
+        tested_categories: {model_name: set of tested categories}，如果为 None 则显示所有类别
     """
-    # 限制图表大小
-    fig, ax = plt.subplots(figsize=(14, 6))
+    # 确定要显示的类别（取所有模型测试过的类别的并集）
+    if tested_categories:
+        all_tested = set()
+        for model_cats in tested_categories.values():
+            all_tested.update(model_cats)
+        # 按 CATEGORIES 的顺序过滤
+        display_categories = [cat for cat in CATEGORIES if cat in all_tested]
+        display_labels = [CATEGORY_LABELS[CATEGORIES.index(cat)] for cat in display_categories]
+    else:
+        display_categories = CATEGORIES
+        display_labels = CATEGORY_LABELS
+    
+    # 如果没有任何类别，返回
+    if not display_categories:
+        print(f"⚠️  没有可显示的类别，跳过图表: {output_file}")
+        return
+    
+    # 根据类别数量调整图表宽度
+    fig_width = max(8, len(display_categories) * 1.2)
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
     
     # 准备数据 - 按模型名排序
     variants = sorted(list(averaged_data.keys()))
-    x = np.arange(len(CATEGORY_LABELS))
+    x = np.arange(len(display_categories))
     width = 0.8 / len(variants) if len(variants) > 0 else 0.8
     
     # 使用高对比度的颜色方案
@@ -293,29 +308,31 @@ def create_bar_chart(brand, averaged_data, output_file):
     
     for i, (variant, color) in enumerate(zip(variants, colors)):
         data = averaged_data[variant]
-        attack_rates = [data[cat] for cat in CATEGORIES]
+        # 只取实际显示的类别的数据
+        attack_rates = [data.get(cat, 0.0) for cat in display_categories]
         
         offset = (i - len(variants)/2 + 0.5) * width
         bars = ax.bar(x + offset, attack_rates, width, 
                      label=variant, color=color, alpha=0.9, edgecolor='white', linewidth=0.5)
         
-        # 在所有柱子上显示数值
+        # 在所有柱子上显示数值（包括0）
         for bar in bars:
             height = bar.get_height()
-            if height > 0:  # 只要不是0就显示
-                # 根据高度调整字体大小和位置
-                if height > 5:
-                    fontsize = 7
-                    va = 'bottom'
-                    y_offset = 0
-                else:
-                    fontsize = 6
-                    va = 'bottom'
-                    y_offset = 1
-                
-                ax.text(bar.get_x() + bar.get_width()/2., height + y_offset,
-                       f'{height:.1f}%',
-                       ha='center', va=va, fontsize=fontsize, rotation=0)
+            # 根据高度调整字体大小和位置
+            if height > 5:
+                fontsize = 7
+                y_offset = 0.5
+            elif height > 0:
+                fontsize = 6
+                y_offset = 1
+            else:
+                # 0 值也要标注
+                fontsize = 6
+                y_offset = 1
+            
+            ax.text(bar.get_x() + bar.get_width()/2., height + y_offset,
+                   f'{height:.1f}%',
+                   ha='center', va='bottom', fontsize=fontsize, rotation=0)
     
     # 设置标签和标题
     ax.set_xlabel('Category', fontsize=12, fontweight='bold')
@@ -323,14 +340,14 @@ def create_bar_chart(brand, averaged_data, output_file):
     ax.set_title(f'{brand} Models - Attack Rate by Category', 
                 fontsize=14, fontweight='bold', pad=20)
     ax.set_xticks(x)
-    ax.set_xticklabels(CATEGORY_LABELS, rotation=45, ha='right')
+    ax.set_xticklabels(display_labels, rotation=45, ha='right')
     ax.legend(loc='upper left', fontsize=10)
     ax.grid(axis='y', alpha=0.3, linestyle='--')
     ax.set_ylim(0, 105)
     
     # 添加水平参考线
     ax.axhline(y=50, color='red', linestyle='--', alpha=0.3, linewidth=1)
-    ax.text(len(CATEGORY_LABELS)-0.5, 51, '50%', color='red', fontsize=9)
+    ax.text(len(display_categories)-0.5, 51, '50%', color='red', fontsize=9)
     
     # 保存图表
     plt.subplots_adjust(bottom=0.15, top=0.92, left=0.08, right=0.98)
@@ -447,11 +464,11 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
     # 为每个品牌生成图表和统计
     for i, (brand, models_data) in enumerate(sorted(all_data.items()), 1):
         # 计算平均值
-        averaged_data = average_multiple_runs(models_data)
+        averaged_data, tested_categories = average_multiple_runs(models_data)
         
-        # 生成图表
+        # 生成图表（只显示实际测试的类别）
         chart_file = f'output/chart_{i}_{brand.replace(" ", "_").replace("+", "")}.png'
-        create_bar_chart(brand, averaged_data, chart_file)
+        create_bar_chart(brand, averaged_data, chart_file, tested_categories)
         
         # 添加到 HTML
         html_content += f"""
@@ -465,12 +482,21 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
         
         # 添加统计卡片
         for model_name, data in averaged_data.items():
-            avg_attack_rate = np.mean(list(data.values()))
+            # 只计算实际测试的类别的平均值
+            tested_cats = tested_categories.get(model_name, set())
+            if tested_cats:
+                tested_values = [data[cat] for cat in tested_cats]
+                avg_attack_rate = np.mean(tested_values)
+                num_categories = len(tested_cats)
+            else:
+                avg_attack_rate = 0.0
+                num_categories = 0
+            
             html_content += f"""
         <div class="stat-card">
             <div class="stat-label">{model_name}</div>
             <div class="stat-value">{avg_attack_rate:.1f}%</div>
-            <div class="timestamp">Average Attack Rate</div>
+            <div class="timestamp">Average Attack Rate ({num_categories} categories)</div>
         </div>
 """
         
