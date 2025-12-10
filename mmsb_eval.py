@@ -8,6 +8,7 @@ import random
 import re
 from typing import Dict, List, Optional
 from openai import AsyncOpenAI
+from pseudo_random_sampler import sample_by_category, print_sampling_stats
 
 start_time = time.time()
 
@@ -786,13 +787,15 @@ def add_vsp_tool_usage_field(jsonl_file_path: str):
     print(f"   - 无法检测: {stats['not_found']}")
     print(f"   - 已有字段: {stats['already_has_field']}")
 
-def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None):
+def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None, sampling_rate: float = 1.0, sampling_seed: int = 42):
     """
     计算评估指标，生成单个 summary 文件到 output/ 目录
     
     Args:
         jsonl_file_path: JSONL 文件路径
         scenario: 要计算指标的场景（category），如果为 None 则计算所有场景
+        sampling_rate: 采样率（0.0-1.0），默认1.0（不采样）
+        sampling_seed: 采样随机种子，默认42
     """
     print(f"\n📊 开始计算指标: {jsonl_file_path}")
     records = load_jsonl(jsonl_file_path)
@@ -800,6 +803,45 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None):
     if not records:
         print("⚠️  文件为空，无记录可计算")
         return
+    
+    # 如果需要采样，先对数据进行采样
+    if sampling_rate < 1.0:
+        print(f"\n{'='*80}")
+        print(f"🎲 数据采样")
+        print(f"{'='*80}")
+        print(f"采样率: {sampling_rate:.2%}")
+        print(f"随机种子: {sampling_seed}")
+        print(f"原始记录数: {len(records)}")
+        
+        # 转换记录格式以便采样（提取category字段）
+        records_with_category = []
+        for record in records:
+            # 创建一个包含category的字典
+            record_dict = record.copy()
+            # 从origin中提取category
+            category = record.get('origin', {}).get('category', 'Unknown')
+            record_dict['category'] = category
+            records_with_category.append(record_dict)
+        
+        # 按类别采样
+        sampled_records, stats = sample_by_category(
+            records_with_category,
+            seed=sampling_seed,
+            sampling_rate=sampling_rate,
+            category_field='category'
+        )
+        
+        # 打印采样统计
+        print_sampling_stats(stats, sampling_rate)
+        
+        # 移除临时添加的category字段
+        for record in sampled_records:
+            if 'category' in record and 'category' not in records[0]:
+                del record['category']
+        
+        records = sampled_records
+        print(f"采样后记录数: {len(records)}")
+        print(f"{'='*80}\n")
     
     # 提取输入文件名（不含路径和扩展名）
     jsonl_basename = os.path.basename(jsonl_file_path)
@@ -813,6 +855,11 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None):
     task_prefix_pattern = r'^(\d+_tasks_\d+)_(.+)$'
     prefix_match = re.match(task_prefix_pattern, jsonl_name_without_ext)
     
+    # 如果进行了采样，在文件名中添加采样标记
+    sampling_suffix = ""
+    if sampling_rate < 1.0:
+        sampling_suffix = f"_sampled_{sampling_rate:.2f}_seed{sampling_seed}"
+    
     if prefix_match:
         # 新格式：将 task_num_tasks_total 移到 eval_ 前面
         # 1_tasks_2_comt_vsp_... -> 1_eval_tasks_2_comt_vsp_...
@@ -822,10 +869,10 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None):
         task_parts = task_prefix.split('_tasks_')
         task_num = task_parts[0]  # "1"
         tasks_total = task_parts[1]  # "2"
-        csv_file = os.path.join(output_dir, f"{task_num}_eval_tasks_{tasks_total}_{rest_name}.csv")
+        csv_file = os.path.join(output_dir, f"{task_num}_eval_tasks_{tasks_total}_{rest_name}{sampling_suffix}.csv")
     else:
         # 旧格式：eval_{文件名}.csv
-        csv_file = os.path.join(output_dir, f"eval_{jsonl_name_without_ext}.csv")
+        csv_file = os.path.join(output_dir, f"eval_{jsonl_name_without_ext}{sampling_suffix}.csv")
     
     # 过滤出需要计算的记录
     records_to_calc = []
@@ -980,6 +1027,10 @@ if __name__ == "__main__":
                        help="仅添加 VSP 工具使用字段（跳过评估和指标计算）")
     parser.add_argument("--skip_vsp_tools", action="store_true",
                        help="跳过 VSP 工具使用检测（默认: False，自动检测 VSP 文件）")
+    parser.add_argument("--sampling_rate", type=float, default=1.0,
+                       help="数据采样率（0.0-1.0）。默认: 1.0（不采样）。仅在计算指标时生效")
+    parser.add_argument("--sampling_seed", type=int, default=42,
+                       help="采样随机种子。默认: 42。相同种子确保相同的采样结果")
     args = parser.parse_args()
     
     if not os.path.exists(args.jsonl_file):
@@ -1004,10 +1055,10 @@ if __name__ == "__main__":
         # 计算指标（输出到 output/eval_{文件名}.json）
         if args.scenario:
             print(f"\n📊 开始计算场景指标: {args.scenario}")
-            cal_metric(args.jsonl_file, scenario=args.scenario)
+            cal_metric(args.jsonl_file, scenario=args.scenario, sampling_rate=args.sampling_rate, sampling_seed=args.sampling_seed)
         else:
             print(f"\n📊 开始计算所有场景指标")
-            cal_metric(args.jsonl_file, scenario=None)
+            cal_metric(args.jsonl_file, scenario=None, sampling_rate=args.sampling_rate, sampling_seed=args.sampling_seed)
         
         # 如果是 VSP/CoMT-VSP 文件且未跳过，添加工具使用检测
         jsonl_basename = os.path.basename(args.jsonl_file)

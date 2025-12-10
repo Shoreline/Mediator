@@ -41,6 +41,7 @@ ERROR_RATE_THRESHOLD = 0.20   # 20%
 ERROR_RATE_MIN_SAMPLES = 20
 
 from provider import BaseProvider, get_provider
+from pseudo_random_sampler import sample_by_category, print_sampling_stats
 
 # ============ Task Counter（单调递增的任务编号）============
 
@@ -88,6 +89,8 @@ class RunConfig:
     max_tasks: Optional[int] = None  # 最大任务数（用于小批量测试，None 表示不限制）
     comt_data_path: Optional[str] = None  # CoMT数据集路径（用于comt_vsp provider）
     comt_sample_id: Optional[str] = None  # 固定的CoMT样本ID（如 'creation-10003'）
+    sampling_rate: float = 1.0  # 采样率（默认1.0，即不采样）
+    sampling_seed: int = 42  # 采样随机种子（默认42）
 
 # ============ 数据与 Prompt ============
 
@@ -668,12 +671,66 @@ async def run_pipeline(
         print(f"📁 处理所有类别")
     
     # 加载数据
-    mmsb_items = load_mm_safety_by_image_types(
+    mmsb_items_generator = load_mm_safety_by_image_types(
         json_files_pattern,
         image_base_path,
         image_types,
         categories
     )
+    
+    # 如果需要采样，先将生成器转换为列表
+    if cfg.sampling_rate < 1.0:
+        print(f"\n{'='*80}")
+        print(f"🎲 数据采样")
+        print(f"{'='*80}")
+        print(f"采样率: {cfg.sampling_rate:.2%}")
+        print(f"随机种子: {cfg.sampling_seed}")
+        
+        # 将生成器转换为列表
+        all_items = list(mmsb_items_generator)
+        print(f"加载数据: {len(all_items)} 条")
+        
+        # 转换为字典格式以便采样（使用dataclass的内置方法）
+        items_as_dicts = [
+            {
+                'index': item.index,
+                'category': item.category,
+                'question': item.question,
+                'image_path': item.image_path,
+                'image_type': item.image_type,
+            }
+            for item in all_items
+        ]
+        
+        # 按类别采样
+        sampled_dicts, stats = sample_by_category(
+            items_as_dicts,
+            seed=cfg.sampling_seed,
+            sampling_rate=cfg.sampling_rate,
+            category_field='category'
+        )
+        
+        # 打印采样统计
+        print_sampling_stats(stats, cfg.sampling_rate)
+        
+        # 转换回Item对象
+        sampled_items = [
+            Item(
+                index=d['index'],
+                category=d['category'],
+                question=d['question'],
+                image_path=d['image_path'],
+                image_type=d['image_type']
+            )
+            for d in sampled_dicts
+        ]
+        
+        # 转换为生成器（使用iter）
+        mmsb_items = iter(sampled_items)
+        print(f"{'='*80}\n")
+    else:
+        # 不采样，直接使用原始生成器
+        mmsb_items = mmsb_items_generator
 
     q: asyncio.Queue = asyncio.Queue()  # 移除 maxsize 限制，避免死锁
     rate_sem = None
@@ -793,6 +850,12 @@ if __name__ == "__main__":
     parser.add_argument("--comt_sample_id", default=None,
                        help="指定固定的CoMT样本ID（如 'creation-10003'）。不指定则每个MM-Safety任务随机配对一个CoMT任务")
     
+    # 采样参数
+    parser.add_argument("--sampling_rate", type=float, default=1.0,
+                       help="数据采样率（0.0-1.0）。默认: 1.0（不采样）。例如: 0.12 表示采样12%%的数据")
+    parser.add_argument("--sampling_seed", type=int, default=42,
+                       help="采样随机种子。默认: 42。相同种子确保相同的采样结果")
+    
     args = parser.parse_args()
     
     # 验证 image_types 必须在 MMSB_IMAGE_QUESTION_MAP 中
@@ -815,17 +878,27 @@ if __name__ == "__main__":
         task_num = get_next_task_num()
         print(f"🔢 任务编号: {task_num}")
         
+        # 如果使用了采样，添加采样信息到文件名
+        sampling_suffix = ""
+        if args.sampling_rate < 1.0:
+            sampling_suffix = f"_sampled_{args.sampling_rate:.2f}_seed{args.sampling_seed}"
+        
         if args.provider == "vsp":
             # VSP 使用 provider 名称作为前缀，并包含模型信息
             # 临时文件名（不含 task_num 和 tasks_X）
-            args.save_path = f"output/vsp_{safe_model_name}_{timestamp}.jsonl"
+            args.save_path = f"output/vsp_{safe_model_name}{sampling_suffix}_{timestamp}.jsonl"
         elif args.provider == "comt_vsp":
             # CoMT-VSP 使用特定前缀
-            args.save_path = f"output/comt_vsp_{safe_model_name}_{timestamp}.jsonl"
+            args.save_path = f"output/comt_vsp_{safe_model_name}{sampling_suffix}_{timestamp}.jsonl"
         else:
-            args.save_path = f"output/{safe_model_name}_{timestamp}.jsonl"
+            args.save_path = f"output/{safe_model_name}{sampling_suffix}_{timestamp}.jsonl"
         print(f"📝 自动生成输出路径（临时）: {args.save_path}")
 
+    # 验证采样参数
+    if not 0.0 <= args.sampling_rate <= 1.0:
+        print(f"❌ 错误: sampling_rate 必须在 0.0 到 1.0 之间，当前值: {args.sampling_rate}")
+        sys.exit(1)
+    
     cfg = RunConfig(
         provider=args.provider,
         model=args.model,
@@ -839,6 +912,8 @@ if __name__ == "__main__":
         max_tasks=args.max_tasks,
         comt_data_path=args.comt_data_path,
         comt_sample_id=args.comt_sample_id,
+        sampling_rate=args.sampling_rate,
+        sampling_seed=args.sampling_seed,
     )
 
     # ============ 步骤 1: Request（生成答案）============
