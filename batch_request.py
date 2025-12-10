@@ -92,21 +92,29 @@ def close_logging():
 # - 列表：需要遍历的参数变体
 args_combo = [
     # 固定参数：类别和任务数
-    "--categories 12-Health_Consultation 01-Illegal_Activitiy",
+    "",
     
     # 需要遍历的参数变体：不同的 provider 和 model 组合
     [
-        '--provider openrouter --model "google/gemini-2.5-flash"',
         '--provider openrouter --model "qwen/qwen3-vl-235b-a22b-instruct"',
-        '--provider openrouter --model "openai/gpt-5"',
-        '--provider comt_vsp --model "google/gemini-2.5-flash" --comt_sample_id creation-10003',
+        '--provider openrouter --model "qwen/qwen3-vl-32b-instruct"',
+        '--provider openrouter --model "qwen/qwen3-vl-30b-a3b-instruct"',
+        '--provider openrouter --model "qwen/qwen3-vl-8b-instruct"',
+        '--provider openrouter --model "qwen/qwen3-vl-235b-a22b-thinking"',
+        '--provider openrouter --model "qwen/qwen3-vl-30b-a3b-thinking"',
+        '--provider openrouter --model "qwen/qwen3-vl-8b-thinking"',
+        '--provider openrouter --model "opengvlab/internvl3-78b"',
+
         '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-instruct" --comt_sample_id creation-10003',
-        '--provider comt_vsp --model "openai/gpt-5" --comt_sample_id creation-10003',        
+        '--provider comt_vsp --model "qwen/qwen3-vl-32b-instruct" --comt_sample_id creation-10003',
+        '--provider comt_vsp --model "qwen/qwen3-vl-30b-a3b-instruct" --comt_sample_id creation-10003',
+        '--provider comt_vsp --model "qwen/qwen3-vl-8b-instruct" --comt_sample_id creation-10003',
+        '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-thinking" --comt_sample_id creation-10003',
+        '--provider comt_vsp --model "qwen/qwen3-vl-30b-a3b-thinking" --comt_sample_id creation-10003',
+        '--provider comt_vsp --model "qwen/qwen3-vl-8b-thinking" --comt_sample_id creation-10003',    
+        '--provider comt_vsp --model "opengvlab/internvl3-78b" --comt_sample_id creation-10003',
     ],
 ]
-
-# 是否在遇到错误时停止
-STOP_ON_ERROR = False
 
 # 是否显示详细输出
 VERBOSE = True
@@ -132,6 +140,7 @@ class RunResult:
     eval_file: Optional[str] = None         # 评估结果文件路径
     vsp_dir: Optional[str] = None           # VSP 详细输出目录
     error_message: Optional[str] = None     # 错误信息
+    error_key: Optional[str] = None         # 错误标识（如 "stop_reason" 表示 request.py 内部自动停止）
     
     # 从参数中提取的信息
     provider: Optional[str] = None
@@ -311,46 +320,46 @@ def run_request(args_str: str, run_index: int, total_runs: int) -> RunResult:
         end_time = datetime.now()
         duration = end_time - start_time
         
-        if process.returncode == 0:
+        # 检测 STOP_REASON（由 request.py 内部自动停止时打印）
+        stop_match = re.search(r"自动停止原因:\s*(.+)", output)
+        error_msg = None
+        error_key = None
+        if stop_match:
+            error_msg = stop_match.group(1).strip()
+            error_key = "stop_reason"
+        
+        output_info = parse_output(output)
+        
+        success_flag = (process.returncode == 0) and (error_key is None)
+        
+        if success_flag:
             print(f"\n✅ 运行 [{run_index}/{total_runs}] 完成 (耗时: {format_duration(duration)})")
-            
-            # 解析输出
-            output_info = parse_output(output)
-            
-            return RunResult(
-                run_index=run_index,
-                args_str=args_str,
-                success=True,
-                start_time=start_time,
-                end_time=end_time,
-                duration=duration,
-                task_num=output_info.get('task_num'),
-                total_tasks=output_info.get('total_tasks'),
-                output_file=output_info.get('output_file'),
-                eval_file=output_info.get('eval_file'),
-                vsp_dir=output_info.get('vsp_dir'),
-                provider=args_info.get('provider'),
-                model=args_info.get('model'),
-                categories=args_info.get('categories'),
-                max_tasks_arg=args_info.get('max_tasks_arg'),
-            )
         else:
             print(f"\n❌ 运行 [{run_index}/{total_runs}] 失败")
-            print(f"   退出码: {process.returncode}")
-            
-            return RunResult(
-                run_index=run_index,
-                args_str=args_str,
-                success=False,
-                start_time=start_time,
-                end_time=end_time,
-                duration=duration,
-                error_message=f"退出码: {process.returncode}",
-                provider=args_info.get('provider'),
-                model=args_info.get('model'),
-                categories=args_info.get('categories'),
-                max_tasks_arg=args_info.get('max_tasks_arg'),
-            )
+            if process.returncode != 0:
+                print(f"   退出码: {process.returncode}")
+            if error_msg:
+                print(f"   检测到错误: {error_msg}")
+        
+        return RunResult(
+            run_index=run_index,
+            args_str=args_str,
+            success=success_flag,
+            start_time=start_time,
+            end_time=end_time,
+            duration=duration,
+            task_num=output_info.get('task_num'),
+            total_tasks=output_info.get('total_tasks'),
+            output_file=output_info.get('output_file'),
+            eval_file=output_info.get('eval_file'),
+            vsp_dir=output_info.get('vsp_dir'),
+            error_message=error_msg or (f"退出码: {process.returncode}" if process.returncode != 0 else None),
+            error_key=error_key,
+            provider=args_info.get('provider'),
+            model=args_info.get('model'),
+            categories=args_info.get('categories'),
+            max_tasks_arg=args_info.get('max_tasks_arg'),
+        )
         
     except Exception as e:
         end_time = datetime.now()
@@ -374,7 +383,7 @@ def run_request(args_str: str, run_index: int, total_runs: int) -> RunResult:
         )
 
 
-def print_results_summary(results: List[RunResult], batch_start: datetime, batch_end: datetime):
+def print_results_summary(results: List[RunResult], batch_start: datetime, batch_end: datetime, stop_reason: Optional[str] = None):
     """打印所有运行结果的详细汇总"""
     batch_duration = batch_end - batch_start
     
@@ -396,6 +405,8 @@ def print_results_summary(results: List[RunResult], batch_start: datetime, batch
     print(f"  总运行次数:   {len(results)}")
     print(f"  成功:         {success_count}")
     print(f"  失败:         {fail_count}")
+    if stop_reason:
+        print(f"  停止原因:     {stop_reason}")
     
     # 每次运行的详细信息
     print(f"\n{'='*100}")
@@ -450,16 +461,17 @@ def print_results_summary(results: List[RunResult], batch_start: datetime, batch
         print(f"{'='*100}")
         
         # 表头
-        print(f"\n  {'#':<4} {'任务编号':<8} {'Provider':<12} {'Model':<35} {'输出文件'}")
-        print(f"  {'─'*4} {'─'*8} {'─'*12} {'─'*35} {'─'*50}")
+        print(f"\n  {'#':<4} {'任务编号':<8} {'Provider':<12} {'Model':<35} {'耗时':<12} {'输出文件'}")
+        print(f"  {'─'*4} {'─'*8} {'─'*12} {'─'*35} {'─'*12} {'─'*50}")
         
         for r in successful_results:
             task_num_str = str(r.task_num) if r.task_num else "N/A"
             provider_str = r.provider or "N/A"
             model_str = (r.model[:32] + "...") if r.model and len(r.model) > 35 else (r.model or "N/A")
+            duration_str = format_duration(r.duration) if r.duration else "N/A"
             output_str = r.output_file or "N/A"
             
-            print(f"  {r.run_index:<4} {task_num_str:<8} {provider_str:<12} {model_str:<35} {output_str}")
+            print(f"  {r.run_index:<4} {task_num_str:<8} {provider_str:<12} {model_str:<35} {duration_str:<12} {output_str}")
     
     # 失败任务汇总
     failed_results = [r for r in results if not r.success]
@@ -572,19 +584,16 @@ def main():
         
         # 运行每个组合
         results: List[RunResult] = []
+        stop_reason: Optional[str] = None
         for i, args_str in enumerate(combinations, 1):
             result = run_request(args_str, i, total_runs)
             results.append(result)
-            
-            if not result.success and STOP_ON_ERROR:
-                print(f"\n⚠️  遇到错误，停止执行（STOP_ON_ERROR=True）")
-                break
         
         # 记录结束时间
         batch_end = datetime.now()
         
         # 打印详细汇总
-        print_results_summary(results, batch_start, batch_end)
+        print_results_summary(results, batch_start, batch_end, stop_reason)
         
         # 获取第一个成功任务的 task_num（用于日志文件和报告命名）
         first_task_num = None
@@ -614,6 +623,9 @@ def main():
         
         # 返回退出码
         fail_count = sum(1 for r in results if not r.success)
+        # 若内部自动停止则使用特殊退出码 2，便于上层监控
+        if stop_reason:
+            sys.exit(2)
         sys.exit(0 if fail_count == 0 else 1)
         
     except Exception as e:

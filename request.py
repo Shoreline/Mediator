@@ -35,6 +35,11 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, AsyncIterator, Iterable
 
+# 自动停止配置（与 batch_request 保持一致）
+MAX_CONSECUTIVE_ERRORS = 5
+ERROR_RATE_THRESHOLD = 0.20   # 20%
+ERROR_RATE_MIN_SAMPLES = 20
+
 from provider import BaseProvider, get_provider
 
 # ============ Task Counter（单调递增的任务编号）============
@@ -254,7 +259,15 @@ def format_pred_for_disk(answer_text: str) -> List[Dict[str, Any]]:
         }]
     }]
 
-def build_record_for_disk(item: Item, prompt_struct: Dict[str, Any], answer_text: str, cfg: RunConfig) -> Dict[str, Any]:
+def build_record_for_disk(
+    item: Item,
+    prompt_struct: Dict[str, Any],
+    answer_text: str,
+    cfg: RunConfig,
+    *,
+    error_key: Optional[str] = None,
+    error_message: Optional[str] = None,
+) -> Dict[str, Any]:
     # 与你之前的结构兼容，并额外保存 sent prompt
     # 处理 prompt_parts：将 base64 图片替换为路径（转换为 ~ 形式）
     prompt_parts_for_disk = []
@@ -272,6 +285,8 @@ def build_record_for_disk(item: Item, prompt_struct: Dict[str, Any], answer_text
     return {
         "index": str(item.index),
         "pred": format_pred_for_disk(answer_text),
+        "error_key": error_key,
+        "error_message": error_message,
         "origin": {
             "index": str(item.index),
             "category": item.category,
@@ -343,6 +358,14 @@ async def consumer(
     progress_lock: asyncio.Lock
 ):
     while True:
+        # 若全局已要求停止，继续消费队列但不再处理新任务
+        if progress_state.get("stop"):
+            task = await q.get()
+            q.task_done()
+            if task is None:
+                break
+            continue
+        
         task = await q.get()
         if task is None:
             q.task_done()  # 标记哨兵任务完成
@@ -362,7 +385,16 @@ async def consumer(
         # 添加请求间隔，避免API限流（特别是OpenRouter等第三方API）
         await asyncio.sleep(0.1 + random.random() * 0.2)
 
-        record = build_record_for_disk(item, prompt_struct, answer, cfg)
+        # 检测错误并写盘
+        error_key, error_message, is_error = detect_error_from_answer(answer)
+        record = build_record_for_disk(
+            item,
+            prompt_struct,
+            answer,
+            cfg,
+            error_key=error_key,
+            error_message=error_message,
+        )
         write_jsonl(cfg.save_path, [record])
         
         # 更新进度
@@ -370,10 +402,23 @@ async def consumer(
         async with progress_lock:
             progress_state['completed'] += 1
             progress_state['total_task_time'] += task_duration
+            progress_state['seen'] += 1
+            if is_error:
+                progress_state['errors'] += 1
+                ck = error_key or (error_message or "unknown_error")
+                if ck == progress_state['consecutive_error_key']:
+                    progress_state['consecutive_error_count'] += 1
+                else:
+                    progress_state['consecutive_error_key'] = ck
+                    progress_state['consecutive_error_count'] = 1
+            else:
+                progress_state['consecutive_error_key'] = None
+                progress_state['consecutive_error_count'] = 0
+            
             completed = progress_state['completed']
             total = progress_state['total']
             total_elapsed = time.time() - progress_state['start_time']
-            avg_time = progress_state['total_task_time'] / completed
+            avg_time = progress_state['total_task_time'] / completed if completed > 0 else 0
             percent = (completed / total * 100) if total > 0 else 0
             
             # 计算预估剩余时间
@@ -389,6 +434,16 @@ async def consumer(
                   f"平均: {avg_time:.2f}s/任务 | "
                   f"本次: {task_duration:.2f}s | "
                   f"预计剩余: {eta_str}")
+            
+            # 自动停止判定
+            if is_error and progress_state['consecutive_error_count'] >= MAX_CONSECUTIVE_ERRORS:
+                progress_state['stop'] = True
+                progress_state['stop_reason'] = f"同一错误连续 {progress_state['consecutive_error_count']} 次: {progress_state['consecutive_error_key']}"
+            if progress_state['seen'] >= ERROR_RATE_MIN_SAMPLES:
+                err_rate = progress_state['errors'] / progress_state['seen']
+                if err_rate > ERROR_RATE_THRESHOLD:
+                    progress_state['stop'] = True
+                    progress_state['stop_reason'] = f"错误率 {err_rate:.1%} 超过阈值 {ERROR_RATE_THRESHOLD:.0%}"
         
         q.task_done()
 
@@ -513,6 +568,39 @@ def is_failed_answer(answer: str) -> bool:
     
     return False
 
+
+def detect_error_from_answer(answer: str) -> (Optional[str], Optional[str], bool):
+    """
+    检测答案文本中的错误模式，返回 (error_key, error_message, is_error)
+    """
+    if answer is None:
+        return "none_answer", "Empty answer", True
+    
+    ans = str(answer)
+    ans_lower = ans.lower()
+    
+    # 显式的 [ERROR] 前缀
+    if ans.strip().startswith("[ERROR]"):
+        return "explicit_error", ans.strip(), True
+    
+    # 具体错误码模式
+    if "error code: 404" in ans_lower:
+        return "404_not_found", "NotFoundError: Error code: 404", True
+    if "error code: 429" in ans_lower:
+        return "429_rate_limit", "RateLimitError: Error code: 429", True
+    
+    # VSP 不完整答案
+    if "vsp completed but no clear answer found" in ans_lower:
+        return "vsp_incomplete", "VSP completed but no clear answer found in debug", True
+    if "收到不完整答案" in ans:
+        return "vsp_incomplete", ans.strip(), True
+    
+    # 通用失败模式
+    if is_failed_answer(ans):
+        return "failed_answer", ans.strip(), True
+    
+    return None, None, False
+
 async def send_with_retry(provider: BaseProvider, prompt_struct: Dict[str, Any], cfg: RunConfig, *, retries: int = 3) -> str:
     delay = 1.0
     for i in range(retries):
@@ -603,7 +691,13 @@ async def run_pipeline(
         'completed': 0,
         'total': 0,  # 先设为 0，producer 完成后会更新
         'start_time': start_time,
-        'total_task_time': 0.0  # 累计任务处理时间
+        'total_task_time': 0.0,  # 累计任务处理时间
+        'errors': 0,
+        'seen': 0,
+        'consecutive_error_key': None,
+        'consecutive_error_count': 0,
+        'stop': False,
+        'stop_reason': None,
     }
     progress_lock = asyncio.Lock()
     
@@ -648,7 +742,7 @@ async def run_pipeline(
     print(f"输出文件: {cfg.save_path}")
     print(f"{'='*80}\n")
     
-    return total_tasks
+    return total_tasks, progress_state.get('stop_reason')
 
 # ============ 入口（示例） ============
 
@@ -754,7 +848,7 @@ if __name__ == "__main__":
     
     request_start = time.time()
     
-    total_tasks = asyncio.run(run_pipeline(
+    total_tasks, stop_reason = asyncio.run(run_pipeline(
         json_files_pattern=args.json_glob,
         image_base_path=args.image_base,
         cfg=cfg,
@@ -799,12 +893,14 @@ if __name__ == "__main__":
                 vsp_batch_dir_renamed = new_vsp_dir
                 print(f"✅ VSP 详细输出目录已重命名: {new_vsp_dir}")
     
+    if stop_reason:
+        print(f"\n⚠️  自动停止原因: {stop_reason}")
     print(f"\n✅ 步骤 1 完成")
     print(f"   耗时: {format_time(request_duration)}")
     print(f"   输出文件: {final_jsonl_path}\n")
     
     # ============ 步骤 2 & 3: 评估答案并计算指标 ============
-    if not args.skip_eval:
+    if not args.skip_eval and not stop_reason:
         from mmsb_eval import perform_eval_async, cal_metric, add_vsp_tool_usage_field
         
         print(f"{'='*80}")
@@ -910,8 +1006,8 @@ if __name__ == "__main__":
         print(f"  - 计算指标: {format_time(metric_duration)}")
         print(f"输出文件: {final_jsonl_path}")
         print(f"{'='*80}\n")
-    else:
-        print(f"\n⏭️  跳过评估步骤（使用 --skip_eval）")
+    elif stop_reason:
+        print(f"\n⏭️  跳过评估步骤（已自动停止: {stop_reason}）")
         
         # 即使跳过评估，也要清理 VSP 路径
         if cfg.provider in ["vsp", "comt_vsp"]:
@@ -953,3 +1049,5 @@ if __name__ == "__main__":
             
             print(f"\n✅ 路径清理完成")
             print(f"   耗时: {format_time(clean_duration)}\n")
+    else:
+        print(f"\n⏭️  跳过评估步骤（使用 --skip_eval）")
