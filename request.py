@@ -934,7 +934,7 @@ if __name__ == "__main__":
     request_duration = time.time() - request_start
     
     # 如果是自动生成的文件名，根据实际任务数重命名
-    # 新命名格式：{task_num}_tasks_{total}_{原文件名}
+    # 新命名格式：{task_num}_sampled_{rate}_seed{seed}_tasks_{total}_{provider}_{model}_{timestamp}.jsonl
     final_jsonl_path = args.save_path
     vsp_batch_dir_renamed = None  # 重命名后的 VSP 详细输出目录
     
@@ -944,8 +944,23 @@ if __name__ == "__main__":
         dir_path = os.path.dirname(old_path)
         filename = os.path.basename(old_path)
         
-        # 新命名格式：{task_num}_tasks_{total}_{原文件名}
-        new_filename = f"{task_num}_tasks_{total_tasks}_{filename}"
+        # 构建新文件名，采样信息在前面
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        safe_model_name = re.sub(r'[^\w\-.]', '_', args.model)
+        
+        # 采样标记（如果有采样）
+        sampling_prefix = ""
+        if args.sampling_rate < 1.0:
+            sampling_prefix = f"_sampled_{args.sampling_rate:.2f}_seed{args.sampling_seed}"
+        
+        # 根据 provider 构建文件名
+        if args.provider == "vsp":
+            new_filename = f"{task_num}{sampling_prefix}_tasks_{total_tasks}_vsp_{safe_model_name}_{timestamp}.jsonl"
+        elif args.provider == "comt_vsp":
+            new_filename = f"{task_num}{sampling_prefix}_tasks_{total_tasks}_comt_vsp_{safe_model_name}_{timestamp}.jsonl"
+        else:
+            new_filename = f"{task_num}{sampling_prefix}_tasks_{total_tasks}_{safe_model_name}_{timestamp}.jsonl"
+        
         new_path = os.path.join(dir_path, new_filename)
         
         if os.path.exists(old_path):
