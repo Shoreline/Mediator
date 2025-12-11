@@ -117,6 +117,10 @@ def sample_records(records: List[Any], seed: int, sampling_rate: float) -> List[
         >>> len(sampled)
         10
     """
+    # 处理空记录列表
+    if len(records) == 0:
+        return []
+    
     if sampling_rate >= 1.0:
         return records.copy()
     
