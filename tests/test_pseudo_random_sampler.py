@@ -429,6 +429,81 @@ class TestSampleByCategory(unittest.TestCase):
             cat_name = f'Category_{cat_idx}'
             self.assertEqual(stats[cat_name]['original'], 100)
             self.assertEqual(stats[cat_name]['sampled'], 12)
+    
+    def test_different_categories_different_masks(self):
+        """测试不同类别使用相同数据集但产生不同的采样mask
+        
+        关键要求：
+        1. 所有类别应该有相同的 sampling rate
+        2. 但是被选中的具体元素（mask中'1'的位置）必须不同
+        3. 即使数据集完全相同
+        """
+        # 创建3个类别，每个类别都有完全相同的数据集
+        # 这模拟了每个类别都有相同数量和内容的场景
+        identical_data = list(range(100))
+        records = []
+        
+        for category in ['A', 'B', 'C']:
+            for value in identical_data:
+                records.append({
+                    'category': category,
+                    'value': value,
+                    'data': f'item_{value}'  # 完全相同的数据
+                })
+        
+        # 执行按类别采样
+        sampled, stats = sample_by_category(
+            records, seed=42, sampling_rate=0.2
+        )
+        
+        # 1. 验证每个类别的采样率相同
+        expected_count = round(100 * 0.2)  # 20
+        for cat in ['A', 'B', 'C']:
+            self.assertEqual(stats[cat]['original'], 100)
+            self.assertEqual(stats[cat]['sampled'], expected_count,
+                           f"Category {cat} should have {expected_count} samples")
+        
+        # 2. 提取每个类别被选中的元素位置
+        sampled_values_A = set()
+        sampled_values_B = set()
+        sampled_values_C = set()
+        
+        for record in sampled:
+            if record['category'] == 'A':
+                sampled_values_A.add(record['value'])
+            elif record['category'] == 'B':
+                sampled_values_B.add(record['value'])
+            elif record['category'] == 'C':
+                sampled_values_C.add(record['value'])
+        
+        # 3. 验证每个类别被选中的具体位置不同
+        # A 和 B 应该选中不同的元素
+        self.assertNotEqual(sampled_values_A, sampled_values_B,
+                          "Category A and B should select different items")
+        
+        # A 和 C 应该选中不同的元素
+        self.assertNotEqual(sampled_values_A, sampled_values_C,
+                          "Category A and C should select different items")
+        
+        # B 和 C 应该选中不同的元素
+        self.assertNotEqual(sampled_values_B, sampled_values_C,
+                          "Category B and C should select different items")
+        
+        # 4. 验证确定性：相同种子产生相同的类别特定mask
+        sampled2, _ = sample_by_category(
+            records, seed=42, sampling_rate=0.2
+        )
+        
+        sampled_values_A2 = {r['value'] for r in sampled2 if r['category'] == 'A'}
+        sampled_values_B2 = {r['value'] for r in sampled2 if r['category'] == 'B'}
+        sampled_values_C2 = {r['value'] for r in sampled2 if r['category'] == 'C'}
+        
+        self.assertEqual(sampled_values_A, sampled_values_A2,
+                        "Same seed should produce same mask for category A")
+        self.assertEqual(sampled_values_B, sampled_values_B2,
+                        "Same seed should produce same mask for category B")
+        self.assertEqual(sampled_values_C, sampled_values_C2,
+                        "Same seed should produce same mask for category C")
 
 
 class TestPrintSamplingStats(unittest.TestCase):
