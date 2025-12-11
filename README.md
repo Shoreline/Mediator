@@ -590,8 +590,10 @@ GENERATE_REPORT = True   # 是否在完成后生成报告
 # 使用默认逻辑，加载所有符合条件的评估文件
 python generate_report_with_charts.py
 
-# 指定要处理的评估文件
-python generate_report_with_charts.py --files output/1_eval_tasks_10_*.csv output/2_eval_tasks_10_*.csv
+# 指定要处理的评估文件（例如采样后的文件）
+python generate_report_with_charts.py \
+  --files output/*_eval-sampled_0.12_seed42_tasks_*.csv \
+  --output output/sampled_0.12_evaluation_report.html
 
 # 指定输出报告路径
 python generate_report_with_charts.py --output output/my_report.html
@@ -607,7 +609,21 @@ python generate_report_with_charts.py --output output/my_report.html
 ### 输出内容
 
 - **HTML 报告**: 包含所有模型的攻击率对比图表
-- **图表文件**: `output/chart_*.png`
+  - **总攻击率图表**: 每个模型的总体攻击率（基于所有类别的加总）
+  - **分类攻击率图表**: 每个类别的详细攻击率
+- **图表文件**: 
+  - `output/chart_*_overall.png` - 总攻击率对比图
+  - `output/chart_*.png` - 分类攻击率图
+
+### 总攻击率计算
+
+总攻击率基于所有类别的实际评估数量加总计算：
+
+```
+总攻击率 = (所有类别的 Unsafe 数量之和) / (所有类别的 Evaluated 数量之和) × 100%
+```
+
+这与简单的平均攻击率不同，因为它考虑了每个类别的实际评估数量权重。
 
 ## 🔄 集成流水线（推荐）
 

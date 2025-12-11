@@ -52,14 +52,27 @@ CATEGORY_LABELS = [
 ]
 
 def read_csv_file(filepath):
-    """读取 CSV 文件并返回数据"""
-    data = {}
+    """
+    读取 CSV 文件并返回数据
+    
+    Returns:
+        tuple: (attack_rates, stats)
+        - attack_rates: {category: attack_rate}
+        - stats: {category: {'evaluated': int, 'unsafe': int, 'safe': int}}
+    """
+    attack_rates = {}
+    stats = {}
+    
     with open(filepath, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
             # 处理不同的列名格式
             category = row.get('Category') or row.get('category')
             
+            if not category:
+                continue
+            
+            # 提取攻击率
             # 两种格式：
             # 1. Attack_Rate(%) - 已经是百分比（6.19 = 6.19%）
             # 2. attack_rate - 是小数（0.0206 = 2.06%，需要×100）
@@ -72,7 +85,7 @@ def read_csv_file(filepath):
             else:
                 continue
             
-            if not category or not attack_rate_str:
+            if not attack_rate_str:
                 continue
             
             try:
@@ -84,8 +97,28 @@ def read_csv_file(filepath):
                 print(f"⚠️  无法解析攻击率: {filepath}, {category}, {attack_rate_str}")
                 attack_rate = 0.0
             
-            data[category] = attack_rate
-    return data
+            attack_rates[category] = attack_rate
+            
+            # 提取统计数据（Evaluated, Unsafe, Safe）
+            try:
+                evaluated = int(row.get('Evaluated', 0))
+                unsafe = int(row.get('Unsafe', 0))
+                safe = int(row.get('Safe', 0))
+                
+                stats[category] = {
+                    'evaluated': evaluated,
+                    'unsafe': unsafe,
+                    'safe': safe
+                }
+            except (ValueError, TypeError):
+                # 如果无法解析统计数据，使用默认值
+                stats[category] = {
+                    'evaluated': 0,
+                    'unsafe': 0,
+                    'safe': 0
+                }
+    
+    return attack_rates, stats
 
 def parse_filename(filename):
     """
@@ -171,7 +204,7 @@ def parse_filename(filename):
 def load_all_data():
     """加载所有 1680 任务的评估数据，按品牌分组"""
     output_dir = 'output'
-    all_data = defaultdict(list)  # {brand: [(model_display_name, timestamp, data), ...]}
+    all_data = defaultdict(list)  # {brand: [(model_display_name, timestamp, data, stats), ...]}
     
     for filename in os.listdir(output_dir):
         if filename.startswith('eval_') and filename.endswith('.csv') and 'tasks_1680' in filename:
@@ -180,13 +213,14 @@ def load_all_data():
             # 解析文件名
             brand, model_display_name, timestamp = parse_filename(filename)
             
-            # 读取数据
-            data = read_csv_file(filepath)
+            # 读取数据（现在返回 attack_rates 和 stats）
+            attack_rates, stats = read_csv_file(filepath)
             
             all_data[brand].append({
                 'model_display_name': model_display_name,
                 'timestamp': timestamp,
-                'data': data,
+                'data': attack_rates,
+                'stats': stats,
                 'filename': filename
             })
     
@@ -201,12 +235,13 @@ def load_all_data():
             
             if line_count == 14 or line_count == 15:  # 13 类别 + 1 表头 (+ 可能的空行)
                 brand, model_display_name, timestamp = parse_filename(filename)
-                data = read_csv_file(filepath)
+                attack_rates, stats = read_csv_file(filepath)
                 
                 all_data[brand].append({
                     'model_display_name': model_display_name,
                     'timestamp': timestamp,
-                    'data': data,
+                    'data': attack_rates,
+                    'stats': stats,
                     'filename': filename
                 })
     
@@ -217,11 +252,12 @@ def average_multiple_runs(models_data):
     对同一模型的多次运行取平均值
     
     Args:
-        models_data: [{model_display_name, timestamp, data}, ...]
+        models_data: [{model_display_name, timestamp, data, stats}, ...]
     
     Returns:
         averaged_data: {display_name: {category: avg_attack_rate}}
         tested_categories: {display_name: set of actually tested categories}
+        averaged_stats: {display_name: {category: {'evaluated': int, 'unsafe': int, 'safe': int}}}
     """
     # 按完整模型名分组
     model_groups = defaultdict(list)
@@ -234,24 +270,49 @@ def average_multiple_runs(models_data):
     # 计算平均值（如果同一个模型有多次运行，取平均）
     averaged_data = {}
     tested_categories = {}  # 记录每个模型实际测试了哪些类别
+    averaged_stats = {}  # 统计数据（加总）
     
     for model_name, items in model_groups.items():
         averaged_data[model_name] = {}
         tested_categories[model_name] = set()
+        averaged_stats[model_name] = {}
         
         for category in CATEGORIES:
             rates = []
+            stats_list = []
+            
             for item in items:
                 if category in item['data']:
                     rates.append(item['data'][category])
+                    if 'stats' in item and category in item['stats']:
+                        stats_list.append(item['stats'][category])
             
             if rates:
                 averaged_data[model_name][category] = np.mean(rates)
                 tested_categories[model_name].add(category)  # 记录实际测试的类别
+                
+                # 统计数据取平均（对于多次运行）
+                if stats_list:
+                    averaged_stats[model_name][category] = {
+                        'evaluated': int(np.mean([s['evaluated'] for s in stats_list])),
+                        'unsafe': int(np.mean([s['unsafe'] for s in stats_list])),
+                        'safe': int(np.mean([s['safe'] for s in stats_list]))
+                    }
+                else:
+                    averaged_stats[model_name][category] = {
+                        'evaluated': 0,
+                        'unsafe': 0,
+                        'safe': 0
+                    }
             else:
                 averaged_data[model_name][category] = 0.0
+                averaged_stats[model_name][category] = {
+                    'evaluated': 0,
+                    'unsafe': 0,
+                    'safe': 0
+                }
     
-    return averaged_data, tested_categories
+    return averaged_data, tested_categories, averaged_stats
 
 def create_bar_chart(brand, averaged_data, output_file, tested_categories=None):
     """
@@ -360,6 +421,109 @@ def create_bar_chart(brand, averaged_data, output_file, tested_categories=None):
     
     print(f"✅ 生成图表: {output_file}")
 
+def calculate_overall_attack_rates(averaged_stats, tested_categories):
+    """
+    计算每个模型的总攻击率
+    
+    Args:
+        averaged_stats: {model_name: {category: {'evaluated': int, 'unsafe': int, 'safe': int}}}
+        tested_categories: {model_name: set of tested categories}
+    
+    Returns:
+        {model_name: overall_attack_rate}
+    """
+    overall_rates = {}
+    
+    for model_name, stats in averaged_stats.items():
+        tested_cats = tested_categories.get(model_name, set())
+        
+        total_evaluated = 0
+        total_unsafe = 0
+        
+        for category in tested_cats:
+            if category in stats:
+                total_evaluated += stats[category]['evaluated']
+                total_unsafe += stats[category]['unsafe']
+        
+        if total_evaluated > 0:
+            overall_rates[model_name] = (total_unsafe / total_evaluated) * 100
+        else:
+            overall_rates[model_name] = 0.0
+    
+    return overall_rates
+
+def create_overall_attack_rate_chart(brand, overall_rates, output_file):
+    """
+    创建总攻击率对比图
+    
+    Args:
+        brand: 品牌名称
+        overall_rates: {model_name: overall_attack_rate}
+        output_file: 输出文件路径
+    """
+    if not overall_rates:
+        print(f"⚠️  没有总攻击率数据，跳过图表: {output_file}")
+        return
+    
+    # 准备数据 - 按模型名排序
+    models = sorted(list(overall_rates.keys()))
+    rates = [overall_rates[model] for model in models]
+    
+    # 创建图表
+    fig, ax = plt.subplots(figsize=(max(8, len(models) * 0.8), 6))
+    
+    # 使用高对比度的颜色
+    color_palette = [
+        '#1f77b4',  # 深蓝
+        '#ff7f0e',  # 橙色
+        '#2ca02c',  # 绿色
+        '#d62728',  # 红色
+        '#9467bd',  # 紫色
+        '#8c564b',  # 棕色
+        '#e377c2',  # 粉色
+        '#7f7f7f',  # 灰色
+        '#17becf',  # 青色
+        '#bcbd22',  # 黄绿
+    ]
+    colors = [color_palette[i % len(color_palette)] for i in range(len(models))]
+    
+    # 绘制柱状图
+    x = np.arange(len(models))
+    bars = ax.bar(x, rates, color=colors, alpha=0.9, edgecolor='white', linewidth=0.5)
+    
+    # 在柱子上显示数值
+    for bar in bars:
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height + 0.5,
+               f'{height:.1f}%',
+               ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
+    # 设置标签和标题
+    ax.set_xlabel('Model', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Overall Attack Rate (%)', fontsize=12, fontweight='bold')
+    ax.set_title(f'{brand} Models - Overall Attack Rate Comparison', 
+                fontsize=14, fontweight='bold', pad=20)
+    ax.set_xticks(x)
+    ax.set_xticklabels(models, rotation=45, ha='right')
+    ax.grid(axis='y', alpha=0.3, linestyle='--')
+    ax.set_ylim(0, max(rates) * 1.15 if rates else 100)
+    
+    # 添加水平参考线
+    if max(rates) > 50:
+        ax.axhline(y=50, color='red', linestyle='--', alpha=0.3, linewidth=1)
+        ax.text(len(models)-0.5, 51, '50%', color='red', fontsize=9)
+    
+    # 保存图表
+    plt.subplots_adjust(bottom=0.25, top=0.92, left=0.08, right=0.98)
+    try:
+        plt.savefig(output_file, dpi=100)
+    except Exception as e:
+        print(f"⚠️  生成图表失败 {output_file}: {e}")
+    finally:
+        plt.close()
+    
+    print(f"✅ 生成总攻击率图表: {output_file}")
+
 def generate_html_report(all_data, output_file='output/evaluation_report.html'):
     """生成包含所有图表的 HTML 报告"""
     
@@ -464,17 +628,29 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
     # 为每个品牌生成图表和统计
     for i, (brand, models_data) in enumerate(sorted(all_data.items()), 1):
         # 计算平均值
-        averaged_data, tested_categories = average_multiple_runs(models_data)
+        averaged_data, tested_categories, averaged_stats = average_multiple_runs(models_data)
         
-        # 生成图表（只显示实际测试的类别）
+        # 生成分类攻击率图表（只显示实际测试的类别）
         chart_file = f'output/chart_{i}_{brand.replace(" ", "_").replace("+", "")}.png'
         create_bar_chart(brand, averaged_data, chart_file, tested_categories)
+        
+        # 计算并生成总攻击率图表
+        overall_rates = calculate_overall_attack_rates(averaged_stats, tested_categories)
+        overall_chart_file = f'output/chart_{i}_{brand.replace(" ", "_").replace("+", "")}_overall.png'
+        create_overall_attack_rate_chart(brand, overall_rates, overall_chart_file)
         
         # 添加到 HTML
         html_content += f"""
     <h2>{i}. {brand}</h2>
+    
+    <h3>Overall Attack Rate Comparison</h3>
     <div class="chart-container">
-        <img src="{os.path.basename(chart_file)}" alt="{brand} Chart">
+        <img src="{os.path.basename(overall_chart_file)}" alt="{brand} Overall Attack Rate">
+    </div>
+    
+    <h3>Attack Rate by Category</h3>
+    <div class="chart-container">
+        <img src="{os.path.basename(chart_file)}" alt="{brand} Category Chart">
     </div>
     
     <div class="stats-grid">
@@ -492,11 +668,14 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
                 avg_attack_rate = 0.0
                 num_categories = 0
             
+            # 获取总攻击率
+            overall_rate = overall_rates.get(model_name, 0.0)
+            
             html_content += f"""
         <div class="stat-card">
             <div class="stat-label">{model_name}</div>
-            <div class="stat-value">{avg_attack_rate:.1f}%</div>
-            <div class="timestamp">Average Attack Rate ({num_categories} categories)</div>
+            <div class="stat-value">{overall_rate:.1f}%</div>
+            <div class="timestamp">Overall Attack Rate | Avg by Category: {avg_attack_rate:.1f}% ({num_categories} categories)</div>
         </div>
 """
         
@@ -565,7 +744,7 @@ def load_specific_data(eval_files: list):
         eval_files: 评估文件路径列表
         
     Returns:
-        {brand: [(model_display_name, timestamp, data), ...]}
+        {brand: [(model_display_name, timestamp, data, stats), ...]}
     """
     all_data = defaultdict(list)
     
@@ -579,14 +758,15 @@ def load_specific_data(eval_files: list):
         # 解析文件名
         brand, model_display_name, timestamp = parse_filename(filename)
         
-        # 读取数据
-        data = read_csv_file(filepath)
+        # 读取数据（现在返回 attack_rates 和 stats）
+        attack_rates, stats = read_csv_file(filepath)
         
-        if data:
+        if attack_rates:
             all_data[brand].append({
                 'model_display_name': model_display_name,
                 'timestamp': timestamp,
-                'data': data,
+                'data': attack_rates,
+                'stats': stats,
                 'filename': filename
             })
     
