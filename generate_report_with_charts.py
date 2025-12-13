@@ -191,6 +191,19 @@ def parse_filename(filename):
         brand = 'InternVL'
         model_display_name = 'InternVL3-78B' + vsp_suffix
     
+    elif 'mistralai' in name or 'ministral' in name:
+        brand = 'Mistral'
+        if 'ministral-14b' in name or 'ministral-8b' in name:
+            # 提取具体的模型大小
+            if 'ministral-14b' in name:
+                model_display_name = 'Ministral-14B' + vsp_suffix
+            else:
+                model_display_name = 'Ministral-8B' + vsp_suffix
+        elif 'ministral' in name:
+            model_display_name = 'Ministral' + vsp_suffix
+        else:
+            model_display_name = 'Mistral (Unknown)' + vsp_suffix
+    
     elif 'comt_vsp' in name or 'vsp' in name:
         brand = 'VSP'
         model_display_name = 'VSP (Unknown Model)'
@@ -524,6 +537,172 @@ def create_overall_attack_rate_chart(brand, overall_rates, output_file):
     
     print(f"✅ 生成总攻击率图表: {output_file}")
 
+def create_global_overall_chart(all_models_overall_rates, all_models_stats, output_file):
+    """
+    创建全局总攻击率对比图 - 显示所有模型的总攻击率
+    
+    Args:
+        all_models_overall_rates: {model_name: overall_attack_rate}
+        all_models_stats: {model_name: stats_dict}
+        output_file: 输出文件路径
+    """
+    if not all_models_overall_rates:
+        print(f"⚠️  没有数据，跳过全局总攻击率图表")
+        return
+    
+    # 准备数据 - 按攻击率降序排序
+    models = sorted(all_models_overall_rates.keys(), key=lambda x: all_models_overall_rates[x], reverse=True)
+    rates = [all_models_overall_rates[model] for model in models]
+    
+    # 计算总问题数（从第一个模型的stats中获取）
+    total_questions = 0
+    if models and models[0] in all_models_stats:
+        for category, cat_stats in all_models_stats[models[0]].items():
+            total_questions += cat_stats.get('evaluated', 0)
+    
+    # 创建图表
+    fig, ax = plt.subplots(figsize=(max(12, len(models) * 0.6), 8))
+    
+    # 使用高对比度的颜色
+    color_palette = [
+        '#1f77b4',  # 深蓝
+        '#ff7f0e',  # 橙色
+        '#2ca02c',  # 绿色
+        '#d62728',  # 红色
+        '#9467bd',  # 紫色
+        '#8c564b',  # 棕色
+        '#e377c2',  # 粉色
+        '#7f7f7f',  # 灰色
+        '#17becf',  # 青色
+        '#bcbd22',  # 黄绿
+    ]
+    colors = [color_palette[i % len(color_palette)] for i in range(len(models))]
+    
+    # 绘制柱状图
+    x = np.arange(len(models))
+    bars = ax.bar(x, rates, color=colors, alpha=0.9, edgecolor='white', linewidth=1)
+    
+    # 在柱子上显示数值
+    for bar in bars:
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height + 0.5,
+               f'{height:.1f}%',
+               ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    # 设置标签和标题
+    ax.set_xlabel('Model', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Overall Attack Rate (%)', fontsize=14, fontweight='bold')
+    title = f'All Models - Overall Attack Rate Comparison\n(Total Questions: {total_questions})'
+    ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+    ax.set_xticks(x)
+    ax.set_xticklabels(models, rotation=45, ha='right', fontsize=9)
+    ax.grid(axis='y', alpha=0.3, linestyle='--')
+    ax.set_ylim(0, max(rates) * 1.15 if rates else 100)
+    
+    # 添加水平参考线
+    if max(rates) > 50:
+        ax.axhline(y=50, color='red', linestyle='--', alpha=0.3, linewidth=1)
+        ax.text(len(models)-0.5, 51, '50%', color='red', fontsize=9)
+    
+    # 保存图表
+    plt.subplots_adjust(bottom=0.25, top=0.92, left=0.08, right=0.98)
+    try:
+        plt.savefig(output_file, dpi=120)
+    except Exception as e:
+        print(f"⚠️  生成图表失败 {output_file}: {e}")
+    finally:
+        plt.close()
+    
+    print(f"✅ 生成全局总攻击率图表: {output_file}")
+
+def create_category_comparison_chart(category, all_models_data, all_models_stats, output_file):
+    """
+    创建单个类别的所有模型对比图
+    
+    Args:
+        category: 类别名称（如 '01-Illegal_Activitiy'）
+        all_models_data: {model_name: {category: attack_rate}}
+        all_models_stats: {model_name: {category: stats}}
+        output_file: 输出文件路径
+    """
+    # 提取该类别的数据
+    models_with_data = {}
+    category_question_count = 0
+    
+    for model_name, data in all_models_data.items():
+        if category in data:
+            models_with_data[model_name] = data[category]
+            # 获取问题数（从stats中）
+            if model_name in all_models_stats and category in all_models_stats[model_name]:
+                category_question_count = all_models_stats[model_name][category].get('evaluated', 0)
+    
+    if not models_with_data:
+        print(f"⚠️  类别 {category} 没有数据，跳过")
+        return
+    
+    # 按攻击率降序排序
+    models = sorted(models_with_data.keys(), key=lambda x: models_with_data[x], reverse=True)
+    rates = [models_with_data[model] for model in models]
+    
+    # 获取类别简称
+    category_idx = CATEGORIES.index(category) if category in CATEGORIES else -1
+    category_label = CATEGORY_LABELS[category_idx] if category_idx >= 0 else category
+    
+    # 创建图表
+    fig, ax = plt.subplots(figsize=(max(12, len(models) * 0.6), 8))
+    
+    # 使用高对比度的颜色
+    color_palette = [
+        '#1f77b4',  # 深蓝
+        '#ff7f0e',  # 橙色
+        '#2ca02c',  # 绿色
+        '#d62728',  # 红色
+        '#9467bd',  # 紫色
+        '#8c564b',  # 棕色
+        '#e377c2',  # 粉色
+        '#7f7f7f',  # 灰色
+        '#17becf',  # 青色
+        '#bcbd22',  # 黄绿
+    ]
+    colors = [color_palette[i % len(color_palette)] for i in range(len(models))]
+    
+    # 绘制柱状图
+    x = np.arange(len(models))
+    bars = ax.bar(x, rates, color=colors, alpha=0.9, edgecolor='white', linewidth=1)
+    
+    # 在柱子上显示数值
+    for bar in bars:
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height + 0.5,
+               f'{height:.1f}%',
+               ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    # 设置标签和标题
+    ax.set_xlabel('Model', fontsize=14, fontweight='bold')
+    ax.set_ylabel('Attack Rate (%)', fontsize=14, fontweight='bold')
+    title = f'Category: {category_label} ({category})\n(Questions: {category_question_count})'
+    ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+    ax.set_xticks(x)
+    ax.set_xticklabels(models, rotation=45, ha='right', fontsize=9)
+    ax.grid(axis='y', alpha=0.3, linestyle='--')
+    ax.set_ylim(0, max(rates) * 1.15 if rates else 100)
+    
+    # 添加水平参考线
+    if max(rates) > 50:
+        ax.axhline(y=50, color='red', linestyle='--', alpha=0.3, linewidth=1)
+        ax.text(len(models)-0.5, 51, '50%', color='red', fontsize=9)
+    
+    # 保存图表
+    plt.subplots_adjust(bottom=0.25, top=0.92, left=0.08, right=0.98)
+    try:
+        plt.savefig(output_file, dpi=120)
+    except Exception as e:
+        print(f"⚠️  生成图表失败 {output_file}: {e}")
+    finally:
+        plt.close()
+    
+    print(f"✅ 生成类别对比图表: {output_file}")
+
 def generate_html_report(all_data, output_file='output/evaluation_report.html'):
     """生成包含所有图表的 HTML 报告"""
     
@@ -801,13 +980,55 @@ def main(eval_files: list = None, output_file: str = None):
     
     print("\n🎨 生成图表和报告...")
     
-    # 生成 HTML 报告
+    # 生成 HTML 报告（包含品牌分组的图表）
     report_output = output_file or 'output/evaluation_report.html'
     generate_html_report(all_data, output_file=report_output)
     
+    # ============ 生成全局图表 ============
+    print("\n📊 生成全局对比图表...")
+    
+    # 1. 收集所有模型的数据
+    all_models_data = {}  # {model_name: {category: attack_rate}}
+    all_models_stats = {}  # {model_name: {category: stats}}
+    all_models_overall_rates = {}  # {model_name: overall_attack_rate}
+    
+    for brand, models_data in all_data.items():
+        # 对每个品牌的数据取平均
+        averaged_data, tested_categories, averaged_stats = average_multiple_runs(models_data)
+        
+        # 计算每个模型的总攻击率
+        overall_rates = calculate_overall_attack_rates(averaged_stats, tested_categories)
+        
+        # 合并到全局数据中
+        for model_name, data in averaged_data.items():
+            all_models_data[model_name] = data
+            all_models_stats[model_name] = averaged_stats[model_name]
+            all_models_overall_rates[model_name] = overall_rates.get(model_name, 0.0)
+    
+    # 2. 生成全局总攻击率对比图
+    create_global_overall_chart(
+        all_models_overall_rates,
+        all_models_stats,
+        'output/chart_global_overall_attack_rate.png'
+    )
+    
+    # 3. 为每个类别生成对比图
+    print("\n📊 生成各类别对比图表...")
+    for category in CATEGORIES:
+        category_label = CATEGORY_LABELS[CATEGORIES.index(category)]
+        output_file = f'output/chart_category_{category_label}_{category}.png'
+        create_category_comparison_chart(
+            category,
+            all_models_data,
+            all_models_stats,
+            output_file
+        )
+    
     print("\n🎉 完成！")
     print(f"📄 HTML 报告: {report_output}")
-    print("🖼️  图表文件: output/chart_*.png")
+    print("🖼️  品牌图表: output/chart_*.png")
+    print("🖼️  全局图表: output/chart_global_overall_attack_rate.png")
+    print("🖼️  类别图表: output/chart_category_*.png")
 
 
 if __name__ == "__main__":
