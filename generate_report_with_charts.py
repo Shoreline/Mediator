@@ -537,7 +537,7 @@ def create_overall_attack_rate_chart(brand, overall_rates, output_file):
     
     print(f"✅ 生成总攻击率图表: {output_file}")
 
-def create_global_overall_chart(all_models_overall_rates, all_models_stats, output_file):
+def create_global_overall_chart(all_models_overall_rates, all_models_stats, output_file, sort_by='rate'):
     """
     创建全局总攻击率对比图 - 显示所有模型的总攻击率
     
@@ -545,13 +545,18 @@ def create_global_overall_chart(all_models_overall_rates, all_models_stats, outp
         all_models_overall_rates: {model_name: overall_attack_rate}
         all_models_stats: {model_name: stats_dict}
         output_file: 输出文件路径
+        sort_by: 排序方式 - 'rate'（按攻击率降序）或 'name'（按模型名字）
     """
     if not all_models_overall_rates:
         print(f"⚠️  没有数据，跳过全局总攻击率图表")
         return
     
-    # 准备数据 - 按攻击率降序排序
-    models = sorted(all_models_overall_rates.keys(), key=lambda x: all_models_overall_rates[x], reverse=True)
+    # 准备数据 - 根据 sort_by 参数排序
+    if sort_by == 'name':
+        models = sorted(all_models_overall_rates.keys())  # 按名字字母顺序
+    else:
+        models = sorted(all_models_overall_rates.keys(), key=lambda x: all_models_overall_rates[x], reverse=True)  # 按攻击率降序
+    
     rates = [all_models_overall_rates[model] for model in models]
     
     # 计算总问题数（从第一个模型的stats中获取）
@@ -592,7 +597,8 @@ def create_global_overall_chart(all_models_overall_rates, all_models_stats, outp
     # 设置标签和标题
     ax.set_xlabel('Model', fontsize=14, fontweight='bold')
     ax.set_ylabel('Overall Attack Rate (%)', fontsize=14, fontweight='bold')
-    title = f'All Models - Overall Attack Rate Comparison\n(Total Questions: {total_questions})'
+    sort_desc = '(Sorted by Attack Rate)' if sort_by == 'rate' else '(Sorted by Model Name)'
+    title = f'All Models - Overall Attack Rate Comparison\n{sort_desc} | Total Questions: {total_questions}'
     ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
     ax.set_xticks(x)
     ax.set_xticklabels(models, rotation=45, ha='right', fontsize=9)
@@ -900,11 +906,19 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
     html_content += """
     <h2 style="margin-top: 60px; border-left: 5px solid #e74c3c; color: #e74c3c;">🌍 Global Comparison - All Models</h2>
     
-    <h3>Global Overall Attack Rate</h3>
+    <h3>Global Overall Attack Rate (Sorted by Attack Rate)</h3>
     <div class="chart-container">
-        <img src="chart_global_overall_attack_rate.png" alt="Global Overall Attack Rate">
+        <img src="chart_global_overall_attack_rate.png" alt="Global Overall Attack Rate (By Rate)">
         <p style="color: #7f8c8d; font-size: 14px; margin-top: 10px;">
-            This chart shows the overall attack rate across all categories for each model, sorted from highest to lowest.
+            This chart shows the overall attack rate across all categories for each model, sorted from highest to lowest attack rate.
+        </p>
+    </div>
+    
+    <h3>Global Overall Attack Rate (Sorted by Model Name)</h3>
+    <div class="chart-container">
+        <img src="chart_global_overall_attack_rate_by_name.png" alt="Global Overall Attack Rate (By Name)">
+        <p style="color: #7f8c8d; font-size: 14px; margin-top: 10px;">
+            This chart shows the overall attack rate for each model, sorted alphabetically by model name for easy lookup.
         </p>
     </div>
     
@@ -1038,10 +1052,20 @@ def main(eval_files: list = None, output_file: str = None):
             all_models_overall_rates[model_name] = overall_rates.get(model_name, 0.0)
     
     # 2. 生成全局总攻击率对比图
+    # 2.1 按攻击率排序
     create_global_overall_chart(
         all_models_overall_rates,
         all_models_stats,
-        'output/chart_global_overall_attack_rate.png'
+        'output/chart_global_overall_attack_rate.png',
+        sort_by='rate'
+    )
+    
+    # 2.2 按模型名字排序
+    create_global_overall_chart(
+        all_models_overall_rates,
+        all_models_stats,
+        'output/chart_global_overall_attack_rate_by_name.png',
+        sort_by='name'
     )
     
     # 3. 为每个类别生成对比图
