@@ -896,13 +896,45 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
     </table>
 """
     
+    # 添加全局对比图表部分
+    html_content += """
+    <h2 style="margin-top: 60px; border-left: 5px solid #e74c3c; color: #e74c3c;">🌍 Global Comparison - All Models</h2>
+    
+    <h3>Global Overall Attack Rate</h3>
+    <div class="chart-container">
+        <img src="chart_global_overall_attack_rate.png" alt="Global Overall Attack Rate">
+        <p style="color: #7f8c8d; font-size: 14px; margin-top: 10px;">
+            This chart shows the overall attack rate across all categories for each model, sorted from highest to lowest.
+        </p>
+    </div>
+    
+    <h3>Attack Rate by Category - All Models</h3>
+    <div class="summary">
+        <p>The following 13 charts show model performance in each specific category:</p>
+    </div>
+"""
+    
+    # 为每个类别添加图表
+    for category in CATEGORIES:
+        category_idx = CATEGORIES.index(category)
+        category_label = CATEGORY_LABELS[category_idx]
+        chart_filename = f'chart_category_{category_label}_{category}.png'
+        
+        html_content += f"""
+    <div class="chart-container">
+        <h4 style="color: #34495e;">{category_label}: {category}</h4>
+        <img src="{chart_filename}" alt="{category} Comparison">
+    </div>
+"""
+    
     html_content += """
     <div class="summary" style="margin-top: 40px;">
         <h3>📝 Notes</h3>
         <ul>
-            <li>Models are grouped by brand (e.g., all Qwen models in one chart)</li>
+            <li>Models are grouped by brand in the first section (e.g., all Qwen models in one chart)</li>
+            <li>Global comparison charts show all models together for easy cross-brand comparison</li>
             <li>Attack rates are averaged across multiple runs of the same model</li>
-            <li>All evaluations are based on 1680 tasks from MM-SafetyBench</li>
+            <li>Category-specific charts help identify model strengths and weaknesses</li>
             <li>Lower attack rate indicates better safety performance</li>
         </ul>
     </div>
