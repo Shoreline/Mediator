@@ -719,24 +719,94 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
     <meta charset="UTF-8">
     <title>MM-SafetyBench Evaluation Report</title>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
             background-color: #f5f5f5;
+            display: flex;
+        }
+        /* 侧边栏样式 */
+        #sidebar {
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 280px;
+            height: 100vh;
+            background: #2c3e50;
+            color: white;
+            overflow-y: auto;
+            padding: 20px;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+        #sidebar h2 {
+            color: #3498db;
+            font-size: 18px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #3498db;
+        }
+        #sidebar ul {
+            list-style: none;
+        }
+        #sidebar ul li {
+            margin: 10px 0;
+        }
+        #sidebar ul li a {
+            color: #ecf0f1;
+            text-decoration: none;
+            display: block;
+            padding: 8px 12px;
+            border-radius: 4px;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+        #sidebar ul li a:hover {
+            background: #34495e;
+            color: #3498db;
+            padding-left: 16px;
+        }
+        #sidebar ul li.subsection {
+            margin-left: 15px;
+        }
+        #sidebar ul li.subsection a {
+            font-size: 13px;
+            color: #bdc3c7;
+        }
+        /* 主内容区域 */
+        #main-content {
+            margin-left: 280px;
+            padding: 40px;
+            width: calc(100% - 280px);
+            max-width: 1400px;
         }
         h1 {
             color: #2c3e50;
             text-align: center;
             border-bottom: 3px solid #3498db;
             padding-bottom: 10px;
+            margin-bottom: 30px;
         }
         h2 {
             color: #34495e;
-            margin-top: 40px;
+            margin-top: 60px;
+            margin-bottom: 20px;
+            padding-top: 20px;
             border-left: 5px solid #3498db;
             padding-left: 15px;
+        }
+        h2.global-section {
+            border-left-color: #e74c3c;
+            color: #e74c3c;
+        }
+        h3 {
+            color: #34495e;
+            margin-top: 30px;
+            margin-bottom: 15px;
         }
         .chart-container {
             background: white;
@@ -754,27 +824,6 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
             padding: 15px;
             border-radius: 5px;
             margin: 20px 0;
-        }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin: 20px 0;
-        }
-        .stat-card {
-            background: white;
-            padding: 15px;
-            border-radius: 5px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #3498db;
-        }
-        .stat-label {
-            color: #7f8c8d;
-            font-size: 14px;
         }
         table {
             width: 100%;
@@ -799,44 +848,123 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
             color: #7f8c8d;
             font-size: 12px;
         }
+        /* 平滑滚动 */
+        html {
+            scroll-behavior: smooth;
+        }
+        /* 响应式设计 */
+        @media (max-width: 1024px) {
+            #sidebar {
+                width: 220px;
+            }
+            #main-content {
+                margin-left: 220px;
+                width: calc(100% - 220px);
+            }
+        }
     </style>
 </head>
 <body>
-    <h1>📊 MM-SafetyBench Evaluation Report</h1>
-    <div class="summary">
-        <p><strong>Generated:</strong> """ + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + """</p>
-        <p><strong>Total Brands:</strong> """ + str(len(all_data)) + """</p>
-        <p><strong>Total Models:</strong> """ + str(sum(len(models) for models in all_data.values())) + """</p>
-    </div>
+    <!-- 侧边栏目录 -->
+    <nav id="sidebar">
+        <h2>📑 Table of Contents</h2>
+        <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#global-comparison">🌍 Global Comparison</a></li>
+            <li class="subsection"><a href="#global-overall-rate">Overall Attack Rate (By Rate)</a></li>
+            <li class="subsection"><a href="#global-overall-name">Overall Attack Rate (By Name)</a></li>
+            <li class="subsection"><a href="#global-categories">By Category (13 Charts)</a></li>
+            <li><a href="#brand-comparison">📊 Brand Comparison</a></li>"""
+    
+    # 添加品牌到目录
+    for i, brand in enumerate(sorted(all_data.keys()), 1):
+        safe_brand = brand.replace(" ", "_").replace("+", "")
+        html_content += f"""
+            <li class="subsection"><a href="#brand-{safe_brand}">{brand}</a></li>"""
+    
+    html_content += """
+            <li><a href="#detailed-info">📋 Detailed Information</a></li>
+            <li><a href="#notes">📝 Notes</a></li>
+        </ul>
+    </nav>
+    
+    <!-- 主内容区域 -->
+    <div id="main-content">
+        <h1>📊 MM-SafetyBench Evaluation Report</h1>
+        <div id="overview" class="summary">
+            <p><strong>Generated:</strong> """ + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + """</p>
+            <p><strong>Total Brands:</strong> """ + str(len(all_data)) + """</p>
+            <p><strong>Total Models:</strong> """ + str(sum(len(models) for models in all_data.values())) + """</p>
+        </div>
+        
+        <!-- 全局对比部分 - 放在最前面 -->
+        <h2 id="global-comparison" class="global-section">🌍 Global Comparison - All Models</h2>
+        
+        <h3 id="global-overall-rate">Global Overall Attack Rate (Sorted by Attack Rate)</h3>
+        <div class="chart-container">
+            <img src="chart_global_overall_attack_rate.png" alt="Global Overall Attack Rate (By Rate)">
+            <p style="color: #7f8c8d; font-size: 14px; margin-top: 10px;">
+                This chart shows the overall attack rate across all categories for each model, sorted from highest to lowest attack rate.
+            </p>
+        </div>
+        
+        <h3 id="global-overall-name">Global Overall Attack Rate (Sorted by Model Name)</h3>
+        <div class="chart-container">
+            <img src="chart_global_overall_attack_rate_by_name.png" alt="Global Overall Attack Rate (By Name)">
+            <p style="color: #7f8c8d; font-size: 14px; margin-top: 10px;">
+                This chart shows the overall attack rate for each model, sorted alphabetically by model name for easy lookup.
+            </p>
+        </div>
+        
+        <h3 id="global-categories">Attack Rate by Category - All Models</h3>
+        <div class="summary">
+            <p>The following 13 charts show model performance in each specific category:</p>
+        </div>
+"""
+    
+    # 添加类别对比图表
+    for category in CATEGORIES:
+        category_idx = CATEGORIES.index(category)
+        category_label = CATEGORY_LABELS[category_idx]
+        chart_filename = f'chart_category_{category_label}_{category}.png'
+        
+        html_content += f"""
+        <div class="chart-container">
+            <h4 style="color: #34495e;">{category_label}: {category}</h4>
+            <img src="{chart_filename}" alt="{category} Comparison">
+        </div>
+"""
+    
+    html_content += """
+        <!-- 品牌对比部分 -->
+        <h2 id="brand-comparison">📊 Brand Comparison</h2>
 """
     
     # 为每个品牌生成图表和统计
     for i, (brand, models_data) in enumerate(sorted(all_data.items()), 1):
-        # 计算平均值
+        safe_brand = brand.replace(" ", "_").replace("+", "")
+        
+        # 计算平均值（用于HTML显示统计信息）
         averaged_data, tested_categories, averaged_stats = average_multiple_runs(models_data)
-        
-        # 生成分类攻击率图表（只显示实际测试的类别）
-        chart_file = f'output/chart_{i}_{brand.replace(" ", "_").replace("+", "")}.png'
-        create_bar_chart(brand, averaged_data, chart_file, tested_categories)
-        
-        # 计算并生成总攻击率图表
         overall_rates = calculate_overall_attack_rates(averaged_stats, tested_categories)
-        overall_chart_file = f'output/chart_{i}_{brand.replace(" ", "_").replace("+", "")}_overall.png'
-        create_overall_attack_rate_chart(brand, overall_rates, overall_chart_file)
         
-        # 添加到 HTML
+        # 图表文件名（图表已由main函数生成）
+        chart_file = f'chart_{i}_{safe_brand}.png'
+        overall_chart_file = f'chart_{i}_{safe_brand}_overall.png'
+        
+        # 添加到 HTML（添加锚点）
         html_content += f"""
-    <h2>{i}. {brand}</h2>
-    
-    <h3>Overall Attack Rate Comparison</h3>
-    <div class="chart-container">
-        <img src="{os.path.basename(overall_chart_file)}" alt="{brand} Overall Attack Rate">
-    </div>
-    
-    <h3>Attack Rate by Category</h3>
-    <div class="chart-container">
-        <img src="{os.path.basename(chart_file)}" alt="{brand} Category Chart">
-    </div>
+        <h3 id="brand-{safe_brand}">{i}. {brand}</h3>
+        
+        <h4>Overall Attack Rate Comparison</h4>
+        <div class="chart-container">
+            <img src="{overall_chart_file}" alt="{brand} Overall Attack Rate">
+        </div>
+        
+        <h4>Attack Rate by Category</h4>
+        <div class="chart-container">
+            <img src="{chart_file}" alt="{brand} Category Chart">
+        </div>
     
     <div class="stats-grid">
 """
@@ -865,20 +993,26 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
 """
         
         html_content += """
-    </div>
-    
-    <table>
-        <thead>
-            <tr>
-                <th>Model</th>
-                <th>Runs</th>
-                <th>CSV Files</th>
-            </tr>
-        </thead>
-        <tbody>
+        </div>
 """
-        
-        # 添加详细信息表格
+    
+    # 添加详细信息表格
+    html_content += """
+        <h2 id="detailed-info">📋 Detailed Information</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Brand</th>
+                    <th>Model</th>
+                    <th>Runs</th>
+                    <th>CSV Files</th>
+                </tr>
+            </thead>
+            <tbody>
+"""
+    
+    # 收集所有品牌的详细信息
+    for brand, models_data in sorted(all_data.items()):
         model_info = defaultdict(list)
         for item in models_data:
             model_name = item['model_display_name']
@@ -887,70 +1021,32 @@ def generate_html_report(all_data, output_file='output/evaluation_report.html'):
                 'filename': item['filename']
             })
         
-        for model_name, info_list in model_info.items():
+        for model_name, info_list in sorted(model_info.items()):
             filenames = [info['filename'] for info in info_list]
             html_content += f"""
-            <tr>
-                <td><strong>{model_name}</strong></td>
-                <td>{len(filenames)}</td>
-                <td class="timestamp" style="max-width: 600px; word-break: break-all;">{', '.join(filenames)}</td>
-            </tr>
-"""
-        
-        html_content += """
-        </tbody>
-    </table>
-"""
-    
-    # 添加全局对比图表部分
-    html_content += """
-    <h2 style="margin-top: 60px; border-left: 5px solid #e74c3c; color: #e74c3c;">🌍 Global Comparison - All Models</h2>
-    
-    <h3>Global Overall Attack Rate (Sorted by Attack Rate)</h3>
-    <div class="chart-container">
-        <img src="chart_global_overall_attack_rate.png" alt="Global Overall Attack Rate (By Rate)">
-        <p style="color: #7f8c8d; font-size: 14px; margin-top: 10px;">
-            This chart shows the overall attack rate across all categories for each model, sorted from highest to lowest attack rate.
-        </p>
-    </div>
-    
-    <h3>Global Overall Attack Rate (Sorted by Model Name)</h3>
-    <div class="chart-container">
-        <img src="chart_global_overall_attack_rate_by_name.png" alt="Global Overall Attack Rate (By Name)">
-        <p style="color: #7f8c8d; font-size: 14px; margin-top: 10px;">
-            This chart shows the overall attack rate for each model, sorted alphabetically by model name for easy lookup.
-        </p>
-    </div>
-    
-    <h3>Attack Rate by Category - All Models</h3>
-    <div class="summary">
-        <p>The following 13 charts show model performance in each specific category:</p>
-    </div>
-"""
-    
-    # 为每个类别添加图表
-    for category in CATEGORIES:
-        category_idx = CATEGORIES.index(category)
-        category_label = CATEGORY_LABELS[category_idx]
-        chart_filename = f'chart_category_{category_label}_{category}.png'
-        
-        html_content += f"""
-    <div class="chart-container">
-        <h4 style="color: #34495e;">{category_label}: {category}</h4>
-        <img src="{chart_filename}" alt="{category} Comparison">
-    </div>
+                <tr>
+                    <td><strong>{brand}</strong></td>
+                    <td>{model_name}</td>
+                    <td>{len(filenames)}</td>
+                    <td class="timestamp" style="max-width: 500px; word-break: break-all; font-size: 11px;">{', '.join(filenames)}</td>
+                </tr>
 """
     
     html_content += """
-    <div class="summary" style="margin-top: 40px;">
-        <h3>📝 Notes</h3>
-        <ul>
-            <li>Models are grouped by brand in the first section (e.g., all Qwen models in one chart)</li>
-            <li>Global comparison charts show all models together for easy cross-brand comparison</li>
-            <li>Attack rates are averaged across multiple runs of the same model</li>
-            <li>Category-specific charts help identify model strengths and weaknesses</li>
-            <li>Lower attack rate indicates better safety performance</li>
-        </ul>
+            </tbody>
+        </table>
+    
+        <h2 id="notes">📝 Notes</h2>
+        <div class="summary">
+            <ul style="line-height: 1.8;">
+                <li><strong>Global Comparison:</strong> Shows all models together for easy cross-brand comparison</li>
+                <li><strong>Brand Comparison:</strong> Models grouped by brand (e.g., all Qwen models in one chart)</li>
+                <li><strong>Attack Rates:</strong> Averaged across multiple runs of the same model</li>
+                <li><strong>Category Charts:</strong> Help identify model strengths and weaknesses in specific scenarios</li>
+                <li><strong>Lower = Better:</strong> Lower attack rate indicates better safety performance</li>
+                <li><strong>Sorting:</strong> Charts sorted by attack rate help identify best/worst performers, while name sorting helps find specific models</li>
+            </ul>
+        </div>
     </div>
 </body>
 </html>
@@ -1021,14 +1117,17 @@ def main(eval_files: list = None, output_file: str = None):
         return
     
     print(f"✅ 找到 {len(all_data)} 个品牌")
+    total_models = sum(len(models) for models in all_data.values())
     for brand, models in all_data.items():
         print(f"  - {brand}: {len(models)} 个模型")
     
-    print("\n🎨 生成图表和报告...")
+    # 创建报告目录
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    report_dir = f'output/reports/models_{total_models}_{timestamp}'
+    os.makedirs(report_dir, exist_ok=True)
+    print(f"\n📁 创建报告目录: {report_dir}")
     
-    # 生成 HTML 报告（包含品牌分组的图表）
-    report_output = output_file or 'output/evaluation_report.html'
-    generate_html_report(all_data, output_file=report_output)
+    print("\n🎨 生成图表和报告...")
     
     # ============ 生成全局图表 ============
     print("\n📊 生成全局对比图表...")
@@ -1056,7 +1155,7 @@ def main(eval_files: list = None, output_file: str = None):
     create_global_overall_chart(
         all_models_overall_rates,
         all_models_stats,
-        'output/chart_global_overall_attack_rate.png',
+        f'{report_dir}/chart_global_overall_attack_rate.png',
         sort_by='rate'
     )
     
@@ -1064,7 +1163,7 @@ def main(eval_files: list = None, output_file: str = None):
     create_global_overall_chart(
         all_models_overall_rates,
         all_models_stats,
-        'output/chart_global_overall_attack_rate_by_name.png',
+        f'{report_dir}/chart_global_overall_attack_rate_by_name.png',
         sort_by='name'
     )
     
@@ -1072,19 +1171,37 @@ def main(eval_files: list = None, output_file: str = None):
     print("\n📊 生成各类别对比图表...")
     for category in CATEGORIES:
         category_label = CATEGORY_LABELS[CATEGORIES.index(category)]
-        output_file = f'output/chart_category_{category_label}_{category}.png'
+        chart_file = f'{report_dir}/chart_category_{category_label}_{category}.png'
         create_category_comparison_chart(
             category,
             all_models_data,
             all_models_stats,
-            output_file
+            chart_file
         )
     
+    # 4. 生成品牌分组图表（修改路径到report_dir）
+    for i, (brand, models_data) in enumerate(sorted(all_data.items()), 1):
+        safe_brand = brand.replace(" ", "_").replace("+", "")
+        averaged_data, tested_categories, averaged_stats = average_multiple_runs(models_data)
+        
+        chart_file = f'{report_dir}/chart_{i}_{safe_brand}.png'
+        create_bar_chart(brand, averaged_data, chart_file, tested_categories)
+        
+        overall_rates = calculate_overall_attack_rates(averaged_stats, tested_categories)
+        overall_chart_file = f'{report_dir}/chart_{i}_{safe_brand}_overall.png'
+        create_overall_attack_rate_chart(brand, overall_rates, overall_chart_file)
+    
+    # 5. 生成 HTML 报告
+    report_output = f'{report_dir}/evaluation_report.html'
+    generate_html_report(all_data, output_file=report_output)
+    
     print("\n🎉 完成！")
+    print(f"📁 报告目录: {report_dir}/")
     print(f"📄 HTML 报告: {report_output}")
-    print("🖼️  品牌图表: output/chart_*.png")
-    print("🖼️  全局图表: output/chart_global_overall_attack_rate.png")
-    print("🖼️  类别图表: output/chart_category_*.png")
+    print(f"🖼️  图表总数: {10 + 2 + 13 + len(all_data)*2} 张")
+    print(f"   - 品牌分组图表: {len(all_data)*2} 张")
+    print(f"   - 全局总攻击率图: 2 张")
+    print(f"   - 类别对比图: 13 张")
 
 
 if __name__ == "__main__":
