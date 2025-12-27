@@ -9,6 +9,7 @@ import re
 from typing import Dict, List, Optional
 from openai import AsyncOpenAI
 from pseudo_random_sampler import sample_by_category, print_sampling_stats
+from check_vsp_tool_usage import extract_result_section, check_tool_usage, check_code_usage
 
 start_time = time.time()
 
@@ -150,38 +151,16 @@ async def async_get_res(prompt: str, model: str = "gpt-5-mini", max_retries: int
                 return ("error", f"API Error: {str(e)}")
     return ("error", "Max retries exceeded")
 
-def extract_result_section_vsp(log_content: str) -> str:
+def check_vsp_tool_usage_from_log(log_file_path: str) -> Optional[tuple]:
     """
-    从 VSP debug log 中提取最后一个 # USER REQUEST # 之后的 # RESULT #: 内容
+    从 VSP debug log 文件检测工具和代码使用情况
     
-    VSP 的 prompt 包含很多 EXAMPLE，每个都有 # RESULT #:
-    我们只关心最后一个真实的用户请求的结果
-    """
-    # 先找到最后一个 "# USER REQUEST #:"
-    user_request_marker = "# USER REQUEST #:"
-    last_user_request_idx = log_content.rfind(user_request_marker)
-    
-    if last_user_request_idx == -1:
-        return ""
-    
-    # 在最后一个 USER REQUEST 之后找 RESULT
-    content_after_user_request = log_content[last_user_request_idx:]
-    
-    result_marker = "# RESULT #:"
-    result_idx = content_after_user_request.find(result_marker)
-    
-    if result_idx == -1:
-        return ""
-    
-    return content_after_user_request[result_idx:]
-
-def check_vsp_tool_usage_from_log(log_file_path: str) -> Optional[bool]:
-    """
-    从 VSP debug log 文件检测是否使用了工具
+    使用 check_vsp_tool_usage.py 中的检测逻辑，确保一致性
     
     Returns:
-        True: 使用了工具
-        False: 未使用工具
+        (used_vsp_tools, used_code): 
+            - used_vsp_tools: 是否使用了 VSP 工具（检测到 [VSP_TOOL_USED] 标记）
+            - used_code: 是否使用了代码（检测到 ```python 代码块）
         None: 无法检测（文件不存在或解析失败）
     """
     if not os.path.exists(log_file_path):
@@ -194,17 +173,17 @@ def check_vsp_tool_usage_from_log(log_file_path: str) -> Optional[bool]:
         print(f"⚠️  读取 VSP debug log 失败: {log_file_path} - {e}")
         return None
     
-    # 提取 RESULT 部分
-    result_section = extract_result_section_vsp(log_content)
+    # 使用统一的提取和检测逻辑（来自 check_vsp_tool_usage.py）
+    result_section = extract_result_section(log_content)
     
     if not result_section:
         return None
     
-    # 查找 ```python 代码块
-    pattern = r'```python\s+.*?```'
-    matches = re.search(pattern, result_section, re.DOTALL)
+    # 检测 VSP 工具使用和代码使用（独立统计）
+    used_vsp_tools = check_tool_usage(result_section)
+    used_code = check_code_usage(result_section)
     
-    return matches is not None
+    return (used_vsp_tools, used_code)
 
 def extract_answer_text(pred: List[Dict]) -> str:
     """
@@ -740,16 +719,16 @@ def add_vsp_tool_usage_field(jsonl_file_path: str):
     stats = {
         'total': len(records),
         'detected': 0,
-        'used_tools': 0,
-        'no_tools': 0,
+        'used_vsp_tools': 0,
+        'used_code': 0,
         'not_found': 0,
         'already_has_field': 0
     }
     
-    # 为每条记录添加 used_vsp_tools 字段
+    # 为每条记录添加 used_vsp_tools 和 used_code 字段
     for record in records:
-        # 检查是否已经有这个字段
-        if 'used_vsp_tools' in record:
+        # 检查是否已经有这些字段
+        if 'used_vsp_tools' in record and 'used_code' in record:
             stats['already_has_field'] += 1
             continue
         
@@ -761,29 +740,32 @@ def add_vsp_tool_usage_field(jsonl_file_path: str):
         # 构建 debug log 路径
         debug_log_path = os.path.join(vsp_batch_dir, category, str(index), 'output', 'vsp_debug.log')
         
-        # 检测工具使用
-        used_tools = check_vsp_tool_usage_from_log(debug_log_path)
+        # 检测工具和代码使用
+        result = check_vsp_tool_usage_from_log(debug_log_path)
         
-        if used_tools is None:
+        if result is None:
             # 无法检测
             stats['not_found'] += 1
             record['used_vsp_tools'] = None
+            record['used_code'] = None
         else:
+            used_vsp_tools, used_code = result
             stats['detected'] += 1
-            record['used_vsp_tools'] = used_tools
-            if used_tools:
-                stats['used_tools'] += 1
-            else:
-                stats['no_tools'] += 1
+            record['used_vsp_tools'] = used_vsp_tools
+            record['used_code'] = used_code
+            if used_vsp_tools:
+                stats['used_vsp_tools'] += 1
+            if used_code:
+                stats['used_code'] += 1
     
     # 保存更新后的文件
     save_jsonl(jsonl_file_path, records)
     
-    print(f"\n✅ VSP 工具使用检测完成:")
+    print(f"\n✅ VSP 使用情况检测完成:")
     print(f"   - 总记录数: {stats['total']}")
     print(f"   - 已检测: {stats['detected']}")
-    print(f"   - 使用了工具: {stats['used_tools']} ({stats['used_tools']/stats['detected']*100:.1f}%)" if stats['detected'] > 0 else "   - 使用了工具: 0")
-    print(f"   - 未使用工具: {stats['no_tools']} ({stats['no_tools']/stats['detected']*100:.1f}%)" if stats['detected'] > 0 else "   - 未使用工具: 0")
+    print(f"   - 使用了 VSP 工具: {stats['used_vsp_tools']} ({stats['used_vsp_tools']/stats['detected']*100:.1f}%)" if stats['detected'] > 0 else "   - 使用了 VSP 工具: 0")
+    print(f"   - 使用了代码: {stats['used_code']} ({stats['used_code']/stats['detected']*100:.1f}%)" if stats['detected'] > 0 else "   - 使用了代码: 0")
     print(f"   - 无法检测: {stats['not_found']}")
     print(f"   - 已有字段: {stats['already_has_field']}")
 
@@ -894,8 +876,10 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None, sampling_ra
                 "error": 0,
                 "total": 0,
                 "evaluated": 0,
-                "tool_used": 0,
-                "tool_total": 0
+                "vsp_tool_used": 0,
+                "vsp_tool_total": 0,
+                "code_used": 0,
+                "code_total": 0
             }
         
         category_metrics[category]["total"] += 1
@@ -920,11 +904,17 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None, sampling_ra
             # 所有其他情况（error、空字符串、未知值）都归类为 error
             category_metrics[category]["error"] += 1
         
-        # 统计工具使用情况
-        if "used_vsp_tools" in record:
-            category_metrics[category]["tool_total"] += 1
+        # 统计 VSP 工具使用情况
+        if "used_vsp_tools" in record and record["used_vsp_tools"] is not None:
+            category_metrics[category]["vsp_tool_total"] += 1
             if record["used_vsp_tools"] is True:
-                category_metrics[category]["tool_used"] += 1
+                category_metrics[category]["vsp_tool_used"] += 1
+        
+        # 统计代码使用情况
+        if "used_code" in record and record["used_code"] is not None:
+            category_metrics[category]["code_total"] += 1
+            if record["used_code"] is True:
+                category_metrics[category]["code_used"] += 1
     
     # 计算攻击率和工具使用率
     all_metrics = {}
@@ -934,12 +924,19 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None, sampling_ra
             metrics["attack_rate"] = float(metrics["unsafe"]) / float(evaluated)
             metrics["safe_rate"] = float(metrics["safe"]) / float(evaluated)
         
-        # 计算工具使用率
-        tool_total = metrics["tool_total"]
-        if tool_total > 0:
-            metrics["tool_usage_rate"] = float(metrics["tool_used"]) / float(tool_total)
+        # 计算 VSP 工具使用率
+        vsp_tool_total = metrics["vsp_tool_total"]
+        if vsp_tool_total > 0:
+            metrics["vsp_tool_usage_rate"] = float(metrics["vsp_tool_used"]) / float(vsp_tool_total)
         else:
-            metrics["tool_usage_rate"] = None  # 没有工具使用数据
+            metrics["vsp_tool_usage_rate"] = None  # 没有 VSP 工具使用数据
+        
+        # 计算代码使用率
+        code_total = metrics["code_total"]
+        if code_total > 0:
+            metrics["code_usage_rate"] = float(metrics["code_used"]) / float(code_total)
+        else:
+            metrics["code_usage_rate"] = None  # 没有代码使用数据
         
         all_metrics[cat] = metrics
     
@@ -947,14 +944,17 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None, sampling_ra
     with open(csv_file, 'w', encoding='utf-8', newline='') as f:
         writer = csv.writer(f)
         
-        # 检查是否有工具使用数据
-        has_tool_data = any(m.get('tool_usage_rate') is not None for m in all_metrics.values())
+        # 检查是否有 VSP 工具和代码使用数据
+        has_vsp_tool_data = any(m.get('vsp_tool_usage_rate') is not None for m in all_metrics.values())
+        has_code_data = any(m.get('code_usage_rate') is not None for m in all_metrics.values())
         
         # 写入表头
-        if has_tool_data:
-            writer.writerow(['Category', 'Total', 'Evaluated', 'Safe', 'Unsafe', 'Error', 'Attack_Rate(%)', 'Safe_Rate(%)', 'Tool_Usage(%)'])
-        else:
-            writer.writerow(['Category', 'Total', 'Evaluated', 'Safe', 'Unsafe', 'Error', 'Attack_Rate(%)', 'Safe_Rate(%)'])
+        header = ['Category', 'Total', 'Evaluated', 'Safe', 'Unsafe', 'Error', 'Attack_Rate(%)', 'Safe_Rate(%)']
+        if has_vsp_tool_data:
+            header.append('VSP_Tool_Usage(%)')
+        if has_code_data:
+            header.append('Code_Usage(%)')
+        writer.writerow(header)
         
         # 写入数据行
         for cat, metrics in sorted(all_metrics.items()):
@@ -968,10 +968,17 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None, sampling_ra
             
             row = [cat, total, evaluated, safe, unsafe, error, f"{attack_rate:.2f}", f"{safe_rate:.2f}"]
             
-            if has_tool_data:
-                tool_usage_rate = metrics.get('tool_usage_rate')
-                if tool_usage_rate is not None:
-                    row.append(f"{tool_usage_rate * 100:.2f}")
+            if has_vsp_tool_data:
+                vsp_tool_usage_rate = metrics.get('vsp_tool_usage_rate')
+                if vsp_tool_usage_rate is not None:
+                    row.append(f"{vsp_tool_usage_rate * 100:.2f}")
+                else:
+                    row.append("N/A")
+            
+            if has_code_data:
+                code_usage_rate = metrics.get('code_usage_rate')
+                if code_usage_rate is not None:
+                    row.append(f"{code_usage_rate * 100:.2f}")
                 else:
                     row.append("N/A")
             
@@ -981,13 +988,17 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None, sampling_ra
     
     # 打印汇总表
     print(f"\n{'='*80}")
-    # 检查是否有工具使用数据
-    has_tool_data = any(m.get('tool_usage_rate') is not None for m in all_metrics.values())
+    # 检查是否有 VSP 工具和代码使用数据
+    has_vsp_tool_data = any(m.get('vsp_tool_usage_rate') is not None for m in all_metrics.values())
+    has_code_data = any(m.get('code_usage_rate') is not None for m in all_metrics.values())
     
-    if has_tool_data:
-        print(f"{'场景':<25} {'总数':<8} {'已评估':<8} {'Safe':<8} {'Unsafe':<8} {'攻击率':<10} {'工具使用率':<10}")
-    else:
-        print(f"{'场景':<25} {'总数':<8} {'已评估':<8} {'Safe':<8} {'Unsafe':<8} {'攻击率':<10}")
+    # 动态构建表头
+    header = f"{'场景':<25} {'总数':<8} {'已评估':<8} {'Safe':<8} {'Unsafe':<8} {'攻击率':<10}"
+    if has_vsp_tool_data:
+        header += f" {'VSP工具':<10}"
+    if has_code_data:
+        header += f" {'代码率':<10}"
+    print(header)
     print(f"{'='*80}")
     
     for cat, metrics in sorted(all_metrics.items()):
@@ -999,12 +1010,19 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None, sampling_ra
         
         line = f"{cat:<25} {total:<8} {evaluated:<8} {safe:<8} {unsafe:<8} {attack_rate:.1f}%"
         
-        if has_tool_data:
-            tool_usage_rate = metrics.get('tool_usage_rate')
-            if tool_usage_rate is not None:
-                line += f"       {tool_usage_rate * 100:.1f}%"
+        if has_vsp_tool_data:
+            vsp_tool_usage_rate = metrics.get('vsp_tool_usage_rate')
+            if vsp_tool_usage_rate is not None:
+                line += f"       {vsp_tool_usage_rate * 100:.1f}%"
             else:
                 line += f"       N/A"
+        
+        if has_code_data:
+            code_usage_rate = metrics.get('code_usage_rate')
+            if code_usage_rate is not None:
+                line += f"   {code_usage_rate * 100:.1f}%"
+            else:
+                line += f"   N/A"
         
         print(line)
 

@@ -92,27 +92,16 @@ def close_logging():
 # - 列表：需要遍历的参数变体
 args_combo = [
     # 固定参数：类别和任务数
-    "",
+    "--sampling_rate 0.12",
     
     # 需要遍历的参数变体：不同的 provider 和 model 组合
     [
-        '--provider openrouter --model "qwen/qwen3-vl-235b-a22b-instruct"',
-        '--provider openrouter --model "qwen/qwen3-vl-32b-instruct"',
-        '--provider openrouter --model "qwen/qwen3-vl-30b-a3b-instruct"',
-        '--provider openrouter --model "qwen/qwen3-vl-8b-instruct"',
-        '--provider openrouter --model "qwen/qwen3-vl-235b-a22b-thinking"',
-        '--provider openrouter --model "qwen/qwen3-vl-30b-a3b-thinking"',
-        '--provider openrouter --model "qwen/qwen3-vl-8b-thinking"',
-        '--provider openrouter --model "opengvlab/internvl3-78b"',
+        
+        '--provider openrouter --model "mistralai/ministral-8b-2512"',
+        '--provider openrouter --model "mistralai/ministral-3b-2512"',
 
-        '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-instruct" --comt_sample_id creation-10003',
-        '--provider comt_vsp --model "qwen/qwen3-vl-32b-instruct" --comt_sample_id creation-10003',
-        '--provider comt_vsp --model "qwen/qwen3-vl-30b-a3b-instruct" --comt_sample_id creation-10003',
-        '--provider comt_vsp --model "qwen/qwen3-vl-8b-instruct" --comt_sample_id creation-10003',
-        '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-thinking" --comt_sample_id creation-10003',
-        '--provider comt_vsp --model "qwen/qwen3-vl-30b-a3b-thinking" --comt_sample_id creation-10003',
-        '--provider comt_vsp --model "qwen/qwen3-vl-8b-thinking" --comt_sample_id creation-10003',    
-        '--provider comt_vsp --model "opengvlab/internvl3-78b" --comt_sample_id creation-10003',
+        '--provider comt_vsp --model "mistralai/ministral-8b-2512" --comt_sample_id creation-10003',
+        '--provider comt_vsp --model "mistralai/ministral-3b-2512" --comt_sample_id creation-10003',
     ],
 ]
 

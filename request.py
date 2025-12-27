@@ -945,7 +945,11 @@ if __name__ == "__main__":
         filename = os.path.basename(old_path)
         
         # 构建新文件名，采样信息在前面
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # 使用与 VSP 批次目录相同的时间戳（如果是 VSP provider）
+        if cfg.provider in ["vsp", "comt_vsp"] and hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
+            timestamp = cfg.vsp_batch_timestamp
+        else:
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         safe_model_name = re.sub(r'[^\w\-.]', '_', args.model)
         
         # 采样标记（如果有采样）

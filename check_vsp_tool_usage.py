@@ -10,44 +10,69 @@ from collections import defaultdict
 
 def extract_result_section(log_content: str) -> str:
     """
-    提取最后一个 # USER REQUEST # 之后的 # RESULT #: 内容
+    提取 LLM 的实际回复部分（模型的实际输出）
     
-    VSP 的 prompt 包含很多 EXAMPLE，每个都有 # RESULT #:
-    我们只关心最后一个真实的用户请求的结果
+    处理两种格式的 log：
+    1. 新格式（有 'ATTENTION! YOUR ACTUAL TASK BEGINS HERE' 标记）：
+       在该标记之后找 '# RESULT #:' 
+    2. 旧格式（没有该标记）：
+       使用最后一个 '# RESULT #:' 之后的内容
     """
-    # 先找到最后一个 "# USER REQUEST #:"
-    user_request_marker = "# USER REQUEST #:"
-    last_user_request_idx = log_content.rfind(user_request_marker)
-    
-    if last_user_request_idx == -1:
-        return ""
-    
-    # 在最后一个 USER REQUEST 之后找 RESULT
-    content_after_user_request = log_content[last_user_request_idx:]
-    
     result_marker = "# RESULT #:"
-    result_idx = content_after_user_request.find(result_marker)
+    attention_marker = "ATTENTION! YOUR ACTUAL TASK BEGINS HERE"
     
-    if result_idx == -1:
-        return ""
+    # 检查是否有新格式的标记
+    attention_idx = log_content.rfind(attention_marker)
     
-    return content_after_user_request[result_idx:]
+    if attention_idx != -1:
+        # 新格式：在 ATTENTION 标记之后找 RESULT
+        content_after_attention = log_content[attention_idx:]
+        result_idx = content_after_attention.find(result_marker)
+        
+        if result_idx == -1:
+            return ""
+        
+        # 返回 ATTENTION 之后的 RESULT 部分
+        return content_after_attention[result_idx:]
+    else:
+        # 旧格式：使用最后一个 RESULT
+        last_result_idx = log_content.rfind(result_marker)
+        
+        if last_result_idx == -1:
+            return ""
+        
+        # 返回最后一个 RESULT 之后的内容
+        return log_content[last_result_idx:]
 
 def check_tool_usage(result_section: str) -> bool:
     """
-    检查是否使用了工具
+    检查是否使用了 VSP 工具
     
-    判断标准：在 # RESULT #: 之后是否包含 ```python ... ``` 代码块
+    判断标准：在 # RESULT #: 之后是否包含 [VSP_TOOL_USED] 标记
+    
+    这个标记由 tools.py 中的工具函数在实际执行时输出，
+    确保检测的是真正的 VSP 工具调用，而不是 LLM 自己编写的通用 Python 代码。
+    """
+    if not result_section:
+        return False
+    
+    # 查找 [VSP_TOOL_USED] 标记
+    # 这个标记只有在工具函数真正被调用时才会出现
+    return '[VSP_TOOL_USED]' in result_section
+
+def check_code_usage(result_section: str) -> bool:
+    """
+    检查是否使用了代码
+    
+    判断标准：在 # RESULT #: 之后是否包含 ```python 代码块
+    
+    这表示 LLM 生成了 Python 代码来解决问题。
     """
     if not result_section:
         return False
     
     # 查找 ```python 代码块
-    # 使用正则表达式匹配 ```python ... ``` 或 ```python ... ```的模式
-    pattern = r'```python\s+.*?```'
-    matches = re.search(pattern, result_section, re.DOTALL)
-    
-    return matches is not None
+    return '```python' in result_section
 
 def extract_user_interaction(log_content: str) -> str:
     """
@@ -135,13 +160,17 @@ def analyze_vsp_logs(vsp_details_dir: str, summarize_examples: bool = False, max
     # 统计数据
     stats = {
         "total": 0,
-        "used_tools": 0,
-        "no_tools": 0,
+        "used_vsp_tools": 0,
+        "used_code": 0,
         "no_result_section": 0,
     }
     
     # 按 category 分组统计
-    category_stats = defaultdict(lambda: {"used_tools": 0, "no_tools": 0, "total": 0})
+    category_stats = defaultdict(lambda: {
+        "used_vsp_tools": 0,
+        "used_code": 0,
+        "total": 0
+    })
     
     # 示例文件（用于调试）
     examples = {
@@ -184,12 +213,16 @@ def analyze_vsp_logs(vsp_details_dir: str, summarize_examples: bool = False, max
             stats["no_result_section"] += 1
             continue
         
-        # 检查是否使用了工具
-        used_tools = check_tool_usage(result_section)
+        # 检查是否使用了 VSP 工具
+        used_vsp_tools = check_tool_usage(result_section)
         
-        if used_tools:
-            stats["used_tools"] += 1
-            category_stats[category]["used_tools"] += 1
+        # 检查是否使用了代码
+        used_code = check_code_usage(result_section)
+        
+        # VSP 工具和代码使用独立统计
+        if used_vsp_tools:
+            stats["used_vsp_tools"] += 1
+            category_stats[category]["used_vsp_tools"] += 1
             if len(examples["used_tools"]) < 3:
                 examples["used_tools"].append(str(log_file))
             
@@ -198,14 +231,15 @@ def analyze_vsp_logs(vsp_details_dir: str, summarize_examples: bool = False, max
                 user_interaction = extract_user_interaction(log_content)
                 if user_interaction:
                     examples_with_content["used_tools"].append((str(log_file), user_interaction))
-        else:
-            stats["no_tools"] += 1
-            category_stats[category]["no_tools"] += 1
-            if len(examples["no_tools"]) < 3:
+        
+        if used_code:
+            stats["used_code"] += 1
+            category_stats[category]["used_code"] += 1
+            if len(examples["no_tools"]) < 3 and not used_vsp_tools:
                 examples["no_tools"].append(str(log_file))
             
             # 如果需要保存示例，收集内容
-            if summarize_examples and len(examples_with_content["no_tools"]) < max_examples:
+            if summarize_examples and len(examples_with_content["no_tools"]) < max_examples and not used_vsp_tools:
                 user_interaction = extract_user_interaction(log_content)
                 if user_interaction:
                     examples_with_content["no_tools"].append((str(log_file), user_interaction))
@@ -214,28 +248,30 @@ def analyze_vsp_logs(vsp_details_dir: str, summarize_examples: bool = False, max
     
     # 打印统计结果
     print(f"{'='*80}")
-    print(f"📊 VSP 工具使用统计")
+    print(f"📊 VSP 使用统计")
     print(f"{'='*80}\n")
     
+    valid_total = stats['total'] - stats['no_result_section']
     print(f"总文件数: {stats['total']}")
-    print(f"  - 使用了工具: {stats['used_tools']} ({stats['used_tools']/stats['total']*100:.1f}%)")
-    print(f"  - 未使用工具: {stats['no_tools']} ({stats['no_tools']/stats['total']*100:.1f}%)")
+    print(f"  - 使用了 VSP 工具: {stats['used_vsp_tools']} ({stats['used_vsp_tools']/valid_total*100:.1f}%)" if valid_total > 0 else "  - 使用了 VSP 工具: 0")
+    print(f"  - 使用了代码: {stats['used_code']} ({stats['used_code']/valid_total*100:.1f}%)" if valid_total > 0 else "  - 使用了代码: 0")
     print(f"  - 无 RESULT 部分: {stats['no_result_section']}")
     
     # 按 category 统计
     print(f"\n{'='*80}")
     print(f"📋 按类别统计")
     print(f"{'='*80}\n")
-    print(f"{'类别':<30} {'总数':<8} {'使用工具':<10} {'未使用':<10} {'使用率':<10}")
+    print(f"{'类别':<30} {'总数':<8} {'VSP工具':<10} {'代码':<10} {'VSP使用率':<12} {'代码使用率':<12}")
     print(f"{'-'*80}")
     
     for category in sorted(category_stats.keys()):
         cat_data = category_stats[category]
         total = cat_data["total"]
-        used = cat_data["used_tools"]
-        not_used = cat_data["no_tools"]
-        usage_rate = used / total * 100 if total > 0 else 0
-        print(f"{category:<30} {total:<8} {used:<10} {not_used:<10} {usage_rate:.1f}%")
+        used_vsp = cat_data["used_vsp_tools"]
+        used_code = cat_data["used_code"]
+        vsp_rate = used_vsp / total * 100 if total > 0 else 0
+        code_rate = used_code / total * 100 if total > 0 else 0
+        print(f"{category:<30} {total:<8} {used_vsp:<10} {used_code:<10} {vsp_rate:.1f}%         {code_rate:.1f}%")
     
     # 打印示例文件
     print(f"\n{'='*80}")
