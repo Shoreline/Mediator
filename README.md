@@ -158,10 +158,13 @@ python request.py \
 
 #### 4. 使用 CoMT-VSP 处理（增强型双任务模式）
 
+⚠️ **注意**：必须通过 `--comt_sample_id` 指定一个确定的 CoMT 样本 ID
+
 ```bash
-# 自动从 HuggingFace 下载 CoMT 数据集
+# 使用指定的 CoMT 样本（从 HuggingFace 自动下载数据集）
 python request.py \
   --provider comt_vsp \
+  --comt_sample_id "deletion-0107" \
   --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
   --image_base "~/Downloads/MM-SafetyBench_imgs/" \
   --consumers 3 \
@@ -169,29 +172,24 @@ python request.py \
 ```
 
 ```bash
-# 使用本地 CoMT 数据集
+# 使用本地 CoMT 数据集 + 指定样本
 python request.py \
   --provider comt_vsp \
   --comt_data_path "~/code/CoMT/comt/data.jsonl" \
+  --comt_sample_id "deletion-0107" \
   --json_glob "~/code/MM-SafetyBench/data/processed_questions/*.json" \
   --image_base "~/Downloads/MM-SafetyBench_imgs/" \
   --max_tasks 20
-```
-
-```bash
-# 使用固定的 CoMT 样本进行测试
-python request.py \
-  --provider comt_vsp \
-  --comt_sample_id "creation-10003" \
-  --max_tasks 10
 ```
 
 输出文件：`output/{task_num}_tasks_{total}_comt_vsp_{timestamp}.jsonl`
 详细输出：`output/comt_vsp_details/{task_num}_tasks_{total}_vsp_{timestamp}/`
 
 > 💡 **CoMT-VSP 说明**：同时向 LLM 提出两个任务：
-> - TASK 1: CoMT 几何推理任务（强制使用 VSP 几何工具）
+> - TASK 1: CoMT 物体检测任务（强制使用 VSP detection 工具）
 > - TASK 2: MM-SafetyBench 安全评估任务（直接回答）
+> 
+> 推荐使用 'deletion' 子集的样本（如 deletion-0107），适合转换为物体计数任务
 > 
 > 详细说明请参考 `COMT_GUIDE.md`
 
@@ -472,10 +470,11 @@ VSP (VisualSketchpad) 和 CoMT-VSP 是本地多模态 AI 工具，与其他 Prov
 
 CoMT-VSP 结合了 CoMT 数据集，采用双任务模式：
 
-- **TASK 1**: CoMT 几何推理任务
-  - 使用 CoMT 数据集中的几何问题
-  - 强制使用 VSP 的几何工具（`find_perpendicular_intersection`, `find_parallel_intersection` 等）
-  - 任务类型：`geo`
+- **TASK 1**: CoMT 物体检测任务
+  - 使用 CoMT 数据集中的 deletion 子集样本
+  - 强制使用 VSP 的 detection 工具进行物体检测和计数
+  - 任务类型：`vision`
+  - 必须通过 `--comt_sample_id` 指定样本（如 `deletion-0107`）
 
 - **TASK 2**: MM-SafetyBench 安全评估任务
   - 原始的 MM-SafetyBench 问题

@@ -18,23 +18,24 @@
 
 ## 📖 概述
 
-`ComtVspProvider` 是一个增强型的 VSP Provider，它结合了 [CoMT (Chain of Multi-modal Thought)](https://huggingface.co/datasets/czh-up/CoMT) 数据集，通过双任务训练提升模型的视觉推理能力。
+`ComtVspProvider` 是一个增强型的 VSP Provider，它结合了 [CoMT (Chain of Multi-modal Thought)](https://huggingface.co/datasets/czh-up/CoMT) 数据集，通过双任务训练提升模型的工具使用率。
 
 ### 🎯 核心思想
 
 每次向 LLM 提出两个任务：
-1. **TASK 1**: CoMT 视觉推理任务（需要使用几何工具）
+1. **TASK 1**: CoMT 物体检测任务（强制使用 detection 工具）
 2. **TASK 2**: MM-SafetyBench 安全评估任务（直接回答）
 
-通过 CoMT 任务引导模型主动使用视觉工具，从而提升在安全评估任务上的表现。
+通过 CoMT detection 任务强制引导模型使用 detection 工具，从而提升工具使用率和安全评估表现。
 
 ### ⚡ 关键特性
 
 - ✅ **自动数据加载**: 支持从 HuggingFace 自动下载或使用本地 CoMT 数据集
 - ✅ **图片缓存**: 自动缓存下载的 CoMT 图片到 `~/.cache/mediator/comt_images/`
-- ✅ **双任务模式**: 同时处理 CoMT 几何推理和 MM-SafetyBench 安全评估
-- ✅ **工具使用检测**: 自动分析 VSP 工具调用情况
-- ✅ **固定样本支持**: 可指定特定的 CoMT 样本 ID 进行实验
+- ✅ **双任务模式**: 同时处理 CoMT 物体检测和 MM-SafetyBench 安全评估
+- ✅ **强制工具使用**: 通过强硬的 prompt 要求 LLM 必须使用 detection 工具
+- ✅ **工具使用检测**: 自动分析 VSP detection 工具调用情况
+- ✅ **指定样本模式**: 必须指定特定的 CoMT 样本 ID（推荐使用 deletion 子集）
 - ✅ **完整评估流程**: 集成答案生成、安全评估、指标计算
 
 ---
@@ -43,9 +44,11 @@
 
 ### 1. 最简单的用法
 
+⚠️ **注意**: 必须通过 `--comt_sample_id` 指定 CoMT 样本 ID
+
 ```bash
-# 直接运行，自动从 HuggingFace 下载 CoMT 数据集
-python request.py --provider comt_vsp --max_tasks 5
+# 使用指定样本，自动从 HuggingFace 下载 CoMT 数据集
+python request.py --provider comt_vsp --comt_sample_id deletion-0107 --max_tasks 5
 ```
 
 首次运行时会看到：
@@ -53,6 +56,7 @@ python request.py --provider comt_vsp --max_tasks 5
 📥 从HuggingFace下载CoMT数据集...
 ✅ 成功加载 3853 条CoMT数据
 ✅ 缓存目录: ~/.cache/mediator/comt_images/
+🎯 使用指定的CoMT样本: deletion-0107
 ```
 
 ### 2. 查看结果
@@ -187,10 +191,11 @@ python request.py \
 
 ```bash
 # 问题：VSP 不使用视觉工具
-# 解决：使用 CoMT-VSP 的几何任务引导
+# 解决：使用 CoMT-VSP 的 detection 任务强制引导
 
 python request.py \
   --provider comt_vsp \
+  --comt_sample_id "deletion-0107" \
   --model_name "gpt-5" \
   --max_tasks 100 \
   --categories 08-Political_Lobbying
@@ -435,8 +440,8 @@ def _sample_comt_task(self) -> Optional[Dict[str, Any]]:
     """
     获取CoMT任务
     
-    - 如果指定了 comt_sample_id，返回对应的样本
-    - 否则随机采样一个任务
+    - 必须指定 comt_sample_id
+    - 如果未指定或未找到样本，返回 None 并报错
     """
 ```
 
@@ -447,9 +452,9 @@ def _determine_task_type(self, prompt_struct: Dict[str, Any]) -> str:
     """
     确定任务类型
     
-    ComtVspProvider 强制使用 'geo' 类型（几何推理工具集）
+    ComtVspProvider 强制使用 'vision' 类型（vision 工具集，特别是 detection 工具）
     """
-    return "geo"
+    return "vision"
 ```
 
 #### 4. `_build_vsp_task()`
@@ -461,10 +466,10 @@ def _build_vsp_task(self, prompt_struct: Dict[str, Any],
     构建双任务VSP输入
     
     步骤：
-    1. 采样一个CoMT任务
-    2. 构建双任务prompt（明确工具使用策略）
+    1. 获取指定的CoMT任务
+    2. 构建双任务prompt（强制使用 detection 工具）
     3. 处理图片（缓存管理）
-    4. 生成 ex.json（geo格式）
+    4. 生成 ex.json（vision 格式）
     """
 ```
 
