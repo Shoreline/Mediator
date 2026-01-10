@@ -686,9 +686,20 @@ def add_vsp_tool_usage_field(jsonl_file_path: str):
     """
     # 检测是否是 VSP 或 CoMT-VSP 文件
     jsonl_basename = os.path.basename(jsonl_file_path)
+    jsonl_dir = os.path.dirname(jsonl_file_path)
+    jsonl_dir_name = os.path.basename(jsonl_dir)
     
+    # 方法1: 从 job 文件夹名称识别（新结构）
+    # 格式: job_{num}_tasks_{total}_{Provider}_{model}_{timestamp}
+    job_folder_pattern = r'job_\d+_tasks_\d+_(Vsp|ComtVsp)_'
+    is_vsp_from_folder = re.match(job_folder_pattern, jsonl_dir_name)
+    
+    # 方法2: 从文件名识别（旧结构）
     # 支持新格式（{task_num}_tasks_{total}_vsp_...）和旧格式（vsp_... / comt_vsp_...）
-    is_vsp_file = ('vsp_' in jsonl_basename or 'comt_vsp' in jsonl_basename)
+    is_vsp_from_filename = ('vsp_' in jsonl_basename or 'comt_vsp' in jsonl_basename)
+    
+    is_vsp_file = is_vsp_from_folder or is_vsp_from_filename
+    
     if not is_vsp_file:
         print(f"⚠️  不是 VSP/CoMT-VSP 文件，跳过工具使用检测: {jsonl_basename}")
         return
