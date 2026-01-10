@@ -628,17 +628,37 @@ async def perform_eval_async(jsonl_file_path: str, scenario: Optional[str] = Non
 
 def find_vsp_details_dir(jsonl_file_path: str) -> Optional[str]:
     """
-    根据 JSONL 文件名找到对应的 VSP 详细输出目录
+    根据 JSONL 文件路径找到对应的 VSP 详细输出目录
     
-    支持两种命名格式：
-    1. 新格式: {task_num}_tasks_{total}_vsp_{model}_{timestamp}.jsonl
-       对应目录: {task_num}_tasks_{total}_vsp_{timestamp}
-    2. 旧格式: vsp_{model}_{timestamp}_tasks_{total}.jsonl
-       对应目录: vsp_{timestamp}
+    支持三种格式：
+    1. 新 job 文件夹格式: output/job_{num}_tasks_{total}_{Provider}_{model}_{timestamp}/results.jsonl
+       对应目录: output/job_{num}_tasks_{total}_{Provider}_{model}_{timestamp}/details/vsp_{timestamp}
+    2. 旧格式1: {task_num}_tasks_{total}_vsp_{model}_{timestamp}.jsonl
+       对应目录: output/vsp_details/{task_num}_tasks_{total}_vsp_{timestamp}
+    3. 旧格式2: vsp_{model}_{timestamp}_tasks_{total}.jsonl
+       对应目录: output/vsp_details/vsp_{timestamp}
     """
     jsonl_basename = os.path.basename(jsonl_file_path)
+    jsonl_dir = os.path.dirname(jsonl_file_path)
+    jsonl_dir_name = os.path.basename(jsonl_dir)
     
-    # 从文件名提取时间戳
+    # 方法1: 新 job 文件夹结构 - 直接在同目录下的 details/ 子目录中查找
+    # 格式: output/job_{num}_tasks_{total}_{Provider}_{model}_{timestamp}/results.jsonl
+    job_folder_pattern = r'job_\d+_tasks_\d+_(Vsp|ComtVsp)_'
+    if re.match(job_folder_pattern, jsonl_dir_name):
+        details_dir = os.path.join(jsonl_dir, "details")
+        if os.path.exists(details_dir):
+            # details 目录下应该有一个 vsp_{timestamp} 子目录
+            for subdir in os.listdir(details_dir):
+                if subdir.startswith("vsp_"):
+                    vsp_batch_dir = os.path.join(details_dir, subdir)
+                    if os.path.isdir(vsp_batch_dir):
+                        return vsp_batch_dir
+            # 如果没找到子目录，直接返回 details 目录
+            return details_dir
+        return None
+    
+    # 方法2 & 3: 旧格式 - 从文件名提取时间戳，在 output/vsp_details 或 output/comt_vsp_details 中查找
     timestamp_pattern = r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})'
     match = re.search(timestamp_pattern, jsonl_basename)
     
