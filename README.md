@@ -15,11 +15,11 @@ caffeinate -i python request.py \
 # 使用 CoMT-VSP（双任务模式，自动下载 CoMT 数据集）
 python request.py --provider comt_vsp --max_tasks 10
 
-# 评估结果
-python mmsb_eval.py --jsonl_file output/comt_vsp_2025-12-02_15-08-03.jsonl
+# 评估结果（新版结构）
+python mmsb_eval.py --jsonl_file output/job_1_tasks_10_.../results.jsonl
 
 # 查看 JSONL 文件
-python view_jsonl.py output/comt_vsp_2025-12-02_15-08-03.jsonl --to_json results.json
+python view_jsonl.py output/job_1_tasks_10_.../results.jsonl --to_json results.json
 ```
 
 
@@ -124,11 +124,13 @@ python request.py \
   --max_tasks 10
 ```
 
-输出文件会自动命名为：`output/{task_num}_tasks_{total}_{model}_{timestamp}.jsonl`
+输出会自动组织在独立的 job 文件夹中：`output/job_{num}_tasks_{total}_{Provider}_{model}_{timestamp}/`
 
-例如：`output/1_tasks_10_gpt-4o_2025-11-01_12-00-00.jsonl`
-- `task_num`: 单调递增的任务编号（从 1 开始）
+例如：`output/job_1_tasks_10_Openai_gpt-4o_1101_120000/`
+- `num`: 单调递增的任务编号（从 1 开始）
 - `total`: 实际处理的任务数
+- `Provider`: CamelCase 格式的 provider 名称
+- `timestamp`: MMDD_HHMMSS 格式（无年份）
 
 #### 2. 使用 OpenRouter 调用 Claude
 
@@ -153,8 +155,9 @@ python request.py \
   --max_tasks 100
 ```
 
-输出文件：`output/{task_num}_tasks_{total}_vsp_{timestamp}.jsonl`
-详细输出：`output/vsp_details/{task_num}_tasks_{total}_vsp_{timestamp}/`
+输出会组织在 job 文件夹中：`output/job_{num}_tasks_100_Vsp_{model}_{timestamp}/`
+- 主文件：`results.jsonl`, `eval.csv`, `console.log`, `metadata.yaml`
+- 详细输出：`details/` 子目录
 
 #### 4. 使用 CoMT-VSP 处理（增强型双任务模式）
 
@@ -182,8 +185,9 @@ python request.py \
   --max_tasks 20
 ```
 
-输出文件：`output/{task_num}_tasks_{total}_comt_vsp_{timestamp}.jsonl`
-详细输出：`output/comt_vsp_details/{task_num}_tasks_{total}_vsp_{timestamp}/`
+输出会组织在 job 文件夹中：`output/job_{num}_tasks_50_ComtVsp_{model}_{timestamp}/`
+- 主文件：`results.jsonl`, `eval.csv`, `console.log`, `metadata.yaml`
+- 详细输出：`details/` 子目录
 
 > 💡 **CoMT-VSP 说明**：同时向 LLM 提出两个任务：
 > - TASK 1: CoMT 物体检测任务（强制使用 VSP detection 工具）
@@ -404,7 +408,34 @@ python3 pseudo_random_sampler.py
 
 ## 📁 输出格式
 
-结果保存为 JSONL 格式，每行一个 JSON 对象：
+### Job 文件夹结构
+
+每次运行会创建一个独立的 job 文件夹：
+
+```
+output/job_104_tasks_202_ComtVsp_qwen3-vl-8b_0104_193618/
+├── results.jsonl          # LLM 生成结果（JSONL 格式）
+├── eval.csv               # 评估指标汇总（CSV 格式）
+├── console.log            # 完整的控制台输出
+├── metadata.yaml          # Job 元信息（配置、时长、指标等）
+└── details/               # Provider 详细输出（VSP/CoMT-VSP）
+    └── vsp_2026-01-04_00-03-00/
+        └── {category}/{index}/
+            ├── input/     # VSP 输入文件
+            └── output/    # VSP 输出文件
+```
+
+**文件夹命名格式：** `job_{num}_tasks_{total}_{Provider}_{model}_{MMDD_HHMMSS}`
+
+- `num`: 单调递增的任务编号（从 1 开始，保存在 `output/.task_counter`）
+- `total`: 实际处理的任务数
+- `Provider`: CamelCase 格式的 provider 名称（如 `Openai`, `ComtVsp`）
+- `model`: 清理后的模型名称（特殊字符替换为下划线）
+- `MMDD_HHMMSS`: 时间戳（月日_时分秒，无年份）
+
+### JSONL 文件格式
+
+`results.jsonl` 中每行一个 JSON 对象：
 
 ```json
 {
@@ -421,7 +452,7 @@ python3 pseudo_random_sampler.py
     "index": "0",
     "category": "01-Illegal_Activitiy",
     "question": "问题文本",
-    "image_path": "/path/to/image.jpg",
+    "image_path": "~/Downloads/MM-SafetyBench_imgs/...",
     "image_type": "SD",
     "question_field": "Changed Question"
   },
@@ -440,31 +471,86 @@ python3 pseudo_random_sampler.py
 }
 ```
 
+### metadata.yaml 格式
+
+Job 元信息文件包含完整的配置和结果：
+
+```yaml
+job_num: 104
+job_folder: job_104_tasks_202_ComtVsp_qwen3-vl-8b_0104_193618
+timestamp: 01-04 19:36:18
+command: python request.py --provider comt_vsp --model ...
+
+config:
+  provider: comt_vsp
+  model: qwen3-vl-8b-instruct
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 2048
+  seed: 42
+  consumer_size: 20
+
+execution:
+  total_tasks: 202
+  request_duration_seconds: 1234.5
+  eval_duration_seconds: 456.7
+  total_duration_seconds: 1691.2
+  throughput_tasks_per_second: 0.16
+  stop_reason: null
+
+files:
+  jsonl: results.jsonl
+  console_log: console.log
+  eval_csv: eval.csv
+  details: details/
+
+eval_metrics:
+  overall:
+    total: 202
+    evaluated: 200
+    safe: 150
+    unsafe: 45
+    attack_rate: 22.5
+  by_category:
+    01-Illegal_Activity:
+      total: 20
+      evaluated: 20
+      safe: 15
+      unsafe: 5
+      attack_rate: 25.0
+```
+
 ## 🔧 VSP / CoMT-VSP 特殊说明
 
 VSP (VisualSketchpad) 和 CoMT-VSP 是本地多模态 AI 工具，与其他 Provider 有所不同：
 
 ### VSP 输出结构
 
-使用 VSP 或 CoMT-VSP 时，会产生两个输出：
+使用 VSP 或 CoMT-VSP 时，所有输出都在统一的 job 文件夹中：
 
-1. **结果摘要文件**：
-   - VSP: `output/{task_num}_tasks_{N}_vsp_{model}_{timestamp}.jsonl`
-   - CoMT-VSP: `output/{task_num}_tasks_{N}_comt_vsp_{model}_{timestamp}.jsonl`
+```
+output/job_104_tasks_202_Vsp_model_0104_193618/  (或 ComtVsp)
+├── results.jsonl          # 结果摘要
+├── eval.csv               # 评估指标
+├── console.log            # 控制台日志
+├── metadata.yaml          # Job 元信息
+└── details/               # 统一的详细输出目录
+    └── vsp_2026-01-04_19-36-18/
+        └── {category}/{index}/
+            ├── input/     # VSP 输入文件
+            │   ├── request.json (或 ex.json)
+            │   └── image_*.jpg
+            ├── output/    # VSP 输出文件
+            │   ├── vsp_debug.log
+            │   ├── output.json
+            │   └── ...
+            └── mediator_metadata.json
+```
 
-2. **详细输出目录**：
-   - VSP: `output/vsp_details/{task_num}_tasks_{N}_vsp_{timestamp}/`
-   - CoMT-VSP: `output/comt_vsp_details/{task_num}_tasks_{N}_vsp_{timestamp}/`
-   - 每个任务的完整输出
-   - 目录结构：`{task_num}_tasks_{N}_vsp_{timestamp}/{category}/{index}/`
-   - 包含：
-     - `input/`: VSP 的输入文件（`request.json` / `ex.json`, `image_*.jpg`）
-     - `output/`: VSP 的输出文件（`vsp_debug.log`, `output.json` 等）
-     - `mediator_metadata.json`: Mediator 保存的元数据
-
-**命名说明**：
-- `task_num`: 单调递增的任务编号（从 1 开始，保存在 `output/.task_counter`）
-- `N`: 实际处理的任务数
+**关键变化：**
+- 不再有单独的 `vsp_details/` 或 `comt_vsp_details/` 目录
+- 详细输出统一在 job 文件夹的 `details/` 子目录中
+- 所有相关文件集中管理，便于组织和清理
 
 ### CoMT-VSP 双任务模式
 
@@ -577,7 +663,7 @@ GENERATE_REPORT = True   # 是否在完成后生成报告
 批量运行完成后会生成：
 - **日志文件**: `output/batch-{task_num}_{total}_{timestamp}.log`
 - **HTML 报告**: `output/batch_{task_num}_evaluation_report.html`
-- **各任务的输出文件**: `output/{task_num}_tasks_{total}_*.jsonl` 和对应的 CSV 文件
+- **各任务的 job 文件夹**: `output/job_{num}_tasks_{total}_*/` （每个批量任务一个独立文件夹）
 
 ## 📊 生成评估报告（generate_report_with_charts.py）
 
@@ -653,18 +739,22 @@ python request.py --max_tasks 50 --eval_model "gpt-5" --eval_concurrency 30
 
 ### 输出文件
 
-运行完整流水线后，会生成：
+运行完整流水线后，会在独立的 job 文件夹中生成：
 
-1. **JSONL 文件**: `output/{task_num}_tasks_{N}_{model_name}_{timestamp}.jsonl`
-   - 包含所有问题、答案和评估结果
-   - `task_num`: 单调递增的任务编号（从 1 开始）
+```
+output/job_{num}_tasks_{total}_{Provider}_{model}_{timestamp}/
+├── results.jsonl          # 包含所有问题、答案和评估结果
+├── eval.csv               # 评估指标汇总表
+├── console.log            # 完整的控制台输出
+├── metadata.yaml          # Job 配置、时长、指标等元信息
+└── details/               # VSP/CoMT-VSP 详细输出（如适用）
+```
 
-2. **CSV 文件**: `output/{task_num}_eval_tasks_{N}_{model_name}_{timestamp}.csv`
-   - 包含评估指标汇总表
-
-3. **VSP 详细输出** (仅 VSP/CoMT-VSP):
-   - `output/vsp_details/{task_num}_tasks_{N}_vsp_{timestamp}/`
-   - `output/comt_vsp_details/{task_num}_tasks_{N}_vsp_{timestamp}/`
+**命名说明：**
+- `num`: 单调递增的任务编号（从 1 开始，保存在 `output/.task_counter`）
+- `total`: 实际处理的任务数
+- `Provider`: CamelCase 格式的 provider 名称
+- `timestamp`: MMDD_HHMMSS 格式（无年份）
 
 ### 与传统两步流程对比
 
@@ -696,18 +786,20 @@ python request.py --max_tasks 10
 如果需要单独评估已生成的答案（例如评估中断后断点续传），可以使用 `mmsb_eval.py`：
 
 ```bash
-# 评估普通模型结果
+# 评估普通模型结果（新版结构）
 python mmsb_eval.py \
-  --jsonl_file output/gpt-4o_2025-11-01_12-00-00.jsonl
+  --jsonl_file output/job_1_tasks_10_Openai_gpt-4o_.../results.jsonl
 
 # 评估 VSP 结果（包含工具使用检测）
 python mmsb_eval.py \
-  --jsonl_file output/vsp_2025-11-01_12-00-00.jsonl
+  --jsonl_file output/job_2_tasks_50_Vsp_.../results.jsonl
 
 # 评估 CoMT-VSP 结果（包含工具使用检测和双任务答案提取）
 python mmsb_eval.py \
-  --jsonl_file output/comt_vsp_2025-12-02_15-08-03.jsonl
+  --jsonl_file output/job_3_tasks_100_ComtVsp_.../results.jsonl
 ```
+
+**注意**：新版结构中，JSONL 文件统一命名为 `results.jsonl`，评估 CSV 会自动保存为 `eval.csv` 在同一 job 文件夹中。
 
 **评估指标**：
 - **Attack Rate**: 模型被成功诱导执行不安全行为的比例
@@ -726,17 +818,17 @@ python mmsb_eval.py \
 使用 `check_vsp_tool_usage.py` 分析 VSP / CoMT-VSP 是否使用了视觉工具（detection, segmentation 等）：
 
 ```bash
-# 分析默认目录（所有批次）
+# 分析默认目录（所有 job 文件夹的 details）
 python check_vsp_tool_usage.py
 
-# 分析指定 VSP 批次
-python check_vsp_tool_usage.py --dir output/vsp_details/vsp_2025-11-12_20-18-34
+# 分析指定 job 文件夹的 details
+python check_vsp_tool_usage.py --dir output/job_104_tasks_202_Vsp_.../details
 
-# 分析指定 CoMT-VSP 批次
-python check_vsp_tool_usage.py --dir output/comt_vsp_details/vsp_2025-12-02_15-08-03
+# 分析指定批次（新版结构）
+python check_vsp_tool_usage.py --dir output/job_104_tasks_202_Vsp_.../details/vsp_2026-01-04_00-03-00
 
 # 分析特定类别
-python check_vsp_tool_usage.py --dir output/vsp_details/vsp_2025-11-12_20-18-34/08-Political_Lobbying
+python check_vsp_tool_usage.py --dir output/job_104_tasks_202_Vsp_.../details/vsp_2026-01-04_00-03-00/08-Political_Lobbying
 
 # 保存示例到文件（去掉通用示例文本）
 python check_vsp_tool_usage.py --summarize_examples
@@ -805,8 +897,8 @@ python mmsb_eval.py --jsonl_file output/vsp_xxx.jsonl --skip_vsp_tools
 - VSP / CoMT-VSP 提供多种视觉分析工具（detection, segmentation, depth 等）
 - 当 VSP 使用工具时，会在 RESULT 部分生成 Python 代码块
 - 脚本通过检测 ````python` 代码块来判断是否使用了工具
-- 从 JSONL 文件名提取时间戳，定位对应的 `vsp_debug.log` 文件
-- CoMT-VSP 的日志文件位于 `output/comt_vsp_details/` 目录
+- 从 job 文件夹路径定位 `details/` 子目录中的 `vsp_debug.log` 文件
+- 新版结构中，所有 details 统一在 job 文件夹的 `details/` 子目录
 
 ## 📂 项目结构
 
@@ -822,22 +914,91 @@ Mediator/
 ├── generate_report_with_charts.py  # 报告生成脚本
 ├── check_vsp_tool_usage.py      # VSP 工具使用分析
 ├── view_jsonl.py                # JSONL 查看工具
+├── cleanup_output.py            # 输出目录清理工具
 ├── COMT_GUIDE.md                # CoMT-VSP 使用指南
 ├── tests/                       # 测试脚本
 │   ├── README.md
 │   ├── test_provider.py
 │   ├── test_vsp_provider.py
 │   └── ...
-├── output/                      # 输出目录
-│   ├── *.jsonl                 # 推理结果
-│   ├── *.csv                   # 评估指标
-│   ├── *.log                   # 批量运行日志
-│   ├── *.html                  # 评估报告
-│   ├── chart_*.png             # 图表文件
-│   ├── .task_counter           # 任务计数器
-│   ├── vsp_details/            # VSP 详细输出
-│   └── comt_vsp_details/       # CoMT-VSP 详细输出
+├── output/                      # 输出目录（新版结构）
+│   ├── .task_counter           # 任务计数器（全局单调递增）
+│   ├── job_1_tasks_10_.../     # Job 1 文件夹
+│   │   ├── results.jsonl       # LLM 生成结果
+│   │   ├── eval.csv            # 评估指标
+│   │   ├── console.log         # 控制台日志
+│   │   ├── metadata.yaml       # Job 元信息
+│   │   └── details/            # Provider 详细输出（如适用）
+│   ├── job_2_tasks_50_.../     # Job 2 文件夹
+│   └── ...
 └── example/                     # 示例文件
+```
+
+## 🧹 清理输出目录（cleanup_output.py）
+
+使用 `cleanup_output.py` 清理 output/ 目录中不需要的 job 文件夹。
+
+### 基本用法
+
+```bash
+# 预览将要删除的 job（不实际删除）
+python cleanup_output.py --dry-run
+
+# 清理任务数 < 100 的 job（默认）
+python cleanup_output.py
+
+# 清理任务数 < 50 的 job
+python cleanup_output.py --threshold 50
+
+# 清理特定任务编号的 job
+python cleanup_output.py --job-num 42
+
+# 清理多个任务编号的 job
+python cleanup_output.py --job-num 42 43 44
+
+# 自动确认删除（不需要交互）
+python cleanup_output.py --yes
+```
+
+### 功能特性
+
+- **按任务数清理**：自动识别任务数小于阈值的 job 文件夹
+- **按任务编号清理**：支持清理特定任务编号的所有 job
+- **完整删除**：删除整个 job 文件夹（包括所有子文件和 details 目录）
+- **预览模式**：使用 `--dry-run` 查看将要删除的内容
+- **详细摘要**：显示每个 job 的大小、包含文件等信息
+
+### 输出示例
+
+```
+🧹 output/ 目录清理工具（新版 - 基于 job 文件夹）
+================================================================================
+目录: output
+模式: 按任务数阈值清理
+阈值: tasks < 100
+================================================================================
+
+🔍 扫描 job 文件夹...
+
+🗑️  清理摘要
+================================================================================
+
+1. Job 42 (tasks=50)
+   文件夹: job_42_tasks_50_Openai_gpt-4o_0104_120000
+   Provider: Openai
+   Model: gpt-4o
+   Timestamp: 0104_120000
+   大小: 125.3 MB
+   内容:
+     └─ [FILE] console.log
+     └─ [FILE] eval.csv
+     └─ [FILE] metadata.yaml
+     └─ [FILE] results.jsonl
+
+================================================================================
+总计: 1 个 job 文件夹
+将释放空间: 125.3 MB
+================================================================================
 ```
 
 ## 🔍 故障排除

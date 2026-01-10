@@ -839,9 +839,16 @@ def get_provider(cfg: 'RunConfig') -> BaseProvider:
         # 获取批量时间戳（必需）
         batch_timestamp = getattr(cfg, 'vsp_batch_timestamp', None)
         
+        # 使用 job_folder/details 作为输出目录（如果有 job_folder）
+        job_folder = getattr(cfg, 'job_folder', None)
+        if job_folder:
+            output_dir = os.path.join(job_folder, "details")
+        else:
+            output_dir = os.environ.get("VSP_OUTPUT_DIR", "output/vsp_details")
+        
         return VSPProvider(
             vsp_path=os.environ.get("VSP_PATH", "~/code/VisualSketchpad"),
-            output_dir=os.environ.get("VSP_OUTPUT_DIR", "output/vsp_details"),
+            output_dir=output_dir,
             batch_timestamp=batch_timestamp
         )
     elif cfg.provider == "comt_vsp":
@@ -850,9 +857,16 @@ def get_provider(cfg: 'RunConfig') -> BaseProvider:
         comt_data_path = getattr(cfg, 'comt_data_path', None)
         comt_sample_id = getattr(cfg, 'comt_sample_id', None)
         
+        # 使用 job_folder/details 作为输出目录（如果有 job_folder）
+        job_folder = getattr(cfg, 'job_folder', None)
+        if job_folder:
+            output_dir = os.path.join(job_folder, "details")
+        else:
+            output_dir = os.environ.get("VSP_OUTPUT_DIR", "output/comt_vsp_details")
+        
         return ComtVspProvider(
             vsp_path=os.environ.get("VSP_PATH", "~/code/VisualSketchpad"),
-            output_dir=os.environ.get("VSP_OUTPUT_DIR", "output/comt_vsp_details"),
+            output_dir=output_dir,
             batch_timestamp=batch_timestamp,
             comt_data_path=comt_data_path,
             comt_sample_id=comt_sample_id

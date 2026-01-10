@@ -825,36 +825,43 @@ def cal_metric(jsonl_file_path: str, scenario: Optional[str] = None, sampling_ra
         print(f"采样后记录数: {len(records)}")
         print(f"{'='*80}\n")
     
-    # 提取输入文件名（不含路径和扩展名）
-    jsonl_basename = os.path.basename(jsonl_file_path)
-    jsonl_name_without_ext = os.path.splitext(jsonl_basename)[0]
+    # 检测 JSONL 文件是否在 job 文件夹内
+    jsonl_dir = os.path.dirname(jsonl_file_path)
+    jsonl_dir_name = os.path.basename(jsonl_dir)
     
-    # 输出文件路径：output/{task_num}_eval_{rest}.csv 或 output/eval_{文件名}.csv
-    output_dir = "output"
-    os.makedirs(output_dir, exist_ok=True)
+    # 检查目录名是否是 job 文件夹格式（job_{num}_tasks_{total}_...）
+    job_folder_pattern = r'^job_\d+_tasks_\d+_'
+    is_in_job_folder = re.match(job_folder_pattern, jsonl_dir_name)
     
-    # 检查文件名是否以 {task_num}_tasks_{total}_ 开头
-    task_prefix_pattern = r'^(\d+_tasks_\d+)_(.+)$'
-    prefix_match = re.match(task_prefix_pattern, jsonl_name_without_ext)
-    
-    # 如果进行了采样，在文件名中添加采样标记
-    sampling_suffix = ""
-    if sampling_rate < 1.0:
-        sampling_suffix = f"_sampled_{sampling_rate:.2f}_seed{sampling_seed}"
-    
-    if prefix_match:
-        # 新格式：将 task_num_tasks_total 移到 eval_ 前面
-        # 1_tasks_2_comt_vsp_... -> 1_eval_tasks_2_comt_vsp_...
-        task_prefix = prefix_match.group(1)  # "1_tasks_2"
-        rest_name = prefix_match.group(2)     # "comt_vsp_..."
-        # 从 task_prefix 提取 task_num 和 tasks_total 部分
-        task_parts = task_prefix.split('_tasks_')
-        task_num = task_parts[0]  # "1"
-        tasks_total = task_parts[1]  # "2"
-        csv_file = os.path.join(output_dir, f"{task_num}_eval_tasks_{tasks_total}_{rest_name}{sampling_suffix}.csv")
+    if is_in_job_folder:
+        # 新的 job 文件夹结构：CSV 保存在同一文件夹内，文件名为 eval.csv
+        csv_file = os.path.join(jsonl_dir, "eval.csv")
     else:
-        # 旧格式：eval_{文件名}.csv
-        csv_file = os.path.join(output_dir, f"eval_{jsonl_name_without_ext}{sampling_suffix}.csv")
+        # 旧格式：保存到 output/ 目录
+        jsonl_basename = os.path.basename(jsonl_file_path)
+        jsonl_name_without_ext = os.path.splitext(jsonl_basename)[0]
+        
+        output_dir = "output"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 如果进行了采样，在文件名中添加采样标记
+        sampling_suffix = ""
+        if sampling_rate < 1.0:
+            sampling_suffix = f"_sampled_{sampling_rate:.2f}_seed{sampling_seed}"
+        
+        # 检查文件名是否以 {task_num}_tasks_{total}_ 开头
+        task_prefix_pattern = r'^(\d+_tasks_\d+)_(.+)$'
+        prefix_match = re.match(task_prefix_pattern, jsonl_name_without_ext)
+        
+        if prefix_match:
+            task_prefix = prefix_match.group(1)
+            rest_name = prefix_match.group(2)
+            task_parts = task_prefix.split('_tasks_')
+            task_num = task_parts[0]
+            tasks_total = task_parts[1]
+            csv_file = os.path.join(output_dir, f"{task_num}_eval_tasks_{tasks_total}_{rest_name}{sampling_suffix}.csv")
+        else:
+            csv_file = os.path.join(output_dir, f"eval_{jsonl_name_without_ext}{sampling_suffix}.csv")
     
     # 过滤出需要计算的记录
     records_to_calc = []

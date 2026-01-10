@@ -72,6 +72,41 @@ def get_next_task_num() -> int:
     
     return next_num
 
+# ============ Helper Functions ============
+
+def provider_to_camelcase(provider: str) -> str:
+    """
+    Convert provider name to CamelCase format.
+    
+    Examples:
+        comt_vsp -> ComtVsp
+        openai -> Openai
+        qwen -> Qwen
+    """
+    parts = provider.split('_')
+    return ''.join(part.capitalize() for part in parts)
+
+class ConsoleLogger:
+    """
+    Dual output: writes to both console and a log file.
+    """
+    def __init__(self, log_file_path: str):
+        self.log_file = open(log_file_path, 'w', encoding='utf-8')
+        self.terminal = sys.stdout
+        
+    def write(self, message):
+        self.terminal.write(message)
+        self.terminal.flush()
+        self.log_file.write(message)
+        self.log_file.flush()
+    
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+    
+    def close(self):
+        self.log_file.close()
+
 # ============ 配置 ============
 
 @dataclass
@@ -91,6 +126,7 @@ class RunConfig:
     comt_sample_id: Optional[str] = None  # 固定的CoMT样本ID（如 'creation-10003'）
     sampling_rate: float = 1.0  # 采样率（默认1.0，即不采样）
     sampling_seed: int = 42  # 采样随机种子（默认42）
+    job_folder: Optional[str] = None  # Job文件夹路径（用于组织输出文件）
 
 # ============ 数据与 Prompt ============
 
@@ -462,6 +498,194 @@ def format_time(seconds: float) -> str:
         hours = int(seconds // 3600)
         minutes = int((seconds % 3600) // 60)
         return f"{hours}h{minutes}m"
+
+def generate_metadata_yaml(
+    job_folder: str,
+    task_num: int,
+    command: List[str],
+    cfg: RunConfig,
+    total_tasks: int,
+    request_duration: float,
+    eval_duration: float = None,
+    vsp_duration: float = None,
+    clean_duration: float = None,
+    stop_reason: str = None
+):
+    """
+    生成 job 的 metadata.yaml 文件
+    
+    Args:
+        job_folder: Job 文件夹路径
+        task_num: 任务编号
+        command: 完整的命令行参数（sys.argv）
+        cfg: RunConfig 配置对象
+        total_tasks: 总任务数
+        request_duration: Request 步骤耗时（秒）
+        eval_duration: Eval 步骤耗时（秒，可选）
+        vsp_duration: VSP 工具检测耗时（秒，可选）
+        clean_duration: 路径清理耗时（秒，可选）
+        stop_reason: 停止原因（如果有）
+    """
+    import csv
+    
+    # 提取时间戳（从 job_folder 名称）
+    timestamp_match = re.search(r'_(\d{4}_\d{6})$', job_folder)
+    if timestamp_match:
+        ts_str = timestamp_match.group(1)
+        # 格式：MMDD_HHMMSS -> MM-DD HH:MM:SS
+        timestamp_readable = f"{ts_str[0:2]}-{ts_str[2:4]} {ts_str[5:7]}:{ts_str[7:9]}:{ts_str[9:11]}"
+    else:
+        timestamp_readable = datetime.now().strftime("%m-%d %H:%M:%S")
+    
+    # 构建 metadata 字典
+    metadata = {
+        'job_num': task_num,
+        'job_folder': os.path.basename(job_folder),
+        'timestamp': timestamp_readable,
+        'command': ' '.join(command),
+        'config': {
+            'provider': cfg.provider,
+            'model': cfg.model,
+            'temperature': cfg.temperature,
+            'top_p': cfg.top_p,
+            'max_tokens': cfg.max_tokens,
+        }
+    }
+    
+    # 添加可选配置
+    if cfg.seed is not None:
+        metadata['config']['seed'] = cfg.seed
+    metadata['config']['consumer_size'] = cfg.consumer_size
+    if cfg.sampling_rate < 1.0:
+        metadata['config']['sampling_rate'] = cfg.sampling_rate
+        metadata['config']['sampling_seed'] = cfg.sampling_seed
+    
+    # 执行信息
+    total_duration = request_duration
+    if eval_duration:
+        total_duration += eval_duration
+    if vsp_duration:
+        total_duration += vsp_duration
+    if clean_duration:
+        total_duration += clean_duration
+    
+    metadata['execution'] = {
+        'total_tasks': total_tasks,
+        'request_duration_seconds': round(request_duration, 2),
+        'total_duration_seconds': round(total_duration, 2),
+        'throughput_tasks_per_second': round(total_tasks / request_duration, 3) if request_duration > 0 else 0,
+    }
+    
+    if eval_duration is not None:
+        metadata['execution']['eval_duration_seconds'] = round(eval_duration, 2)
+    if vsp_duration is not None:
+        metadata['execution']['vsp_tool_check_duration_seconds'] = round(vsp_duration, 2)
+    if clean_duration is not None:
+        metadata['execution']['path_clean_duration_seconds'] = round(clean_duration, 2)
+    if stop_reason:
+        metadata['execution']['stop_reason'] = stop_reason
+    else:
+        metadata['execution']['stop_reason'] = None
+    
+    # 文件信息
+    metadata['files'] = {
+        'jsonl': 'results.jsonl',
+        'console_log': 'console.log',
+    }
+    
+    # 检查是否有 eval.csv
+    csv_path = os.path.join(job_folder, 'eval.csv')
+    if os.path.exists(csv_path):
+        metadata['files']['eval_csv'] = 'eval.csv'
+        
+        # 解析 eval.csv 提取指标
+        try:
+            eval_metrics = {'by_category': {}}
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                total_evaluated = 0
+                total_safe = 0
+                total_unsafe = 0
+                total_count = 0
+                
+                for row in reader:
+                    category = row.get('Category', 'Unknown')
+                    evaluated = int(row.get('Evaluated', 0))
+                    safe = int(row.get('Safe', 0))
+                    unsafe = int(row.get('Unsafe', 0))
+                    total = int(row.get('Total', 0))
+                    attack_rate_str = row.get('Attack_Rate(%)', '0')
+                    
+                    # 解析攻击率
+                    try:
+                        attack_rate = float(attack_rate_str)
+                    except ValueError:
+                        attack_rate = 0.0
+                    
+                    eval_metrics['by_category'][category] = {
+                        'total': total,
+                        'evaluated': evaluated,
+                        'safe': safe,
+                        'unsafe': unsafe,
+                        'attack_rate': round(attack_rate, 2)
+                    }
+                    
+                    total_evaluated += evaluated
+                    total_safe += safe
+                    total_unsafe += unsafe
+                    total_count += total
+                
+                # 计算总体指标
+                if total_evaluated > 0:
+                    overall_attack_rate = (total_unsafe / total_evaluated) * 100
+                else:
+                    overall_attack_rate = 0.0
+                
+                eval_metrics['overall'] = {
+                    'total': total_count,
+                    'evaluated': total_evaluated,
+                    'safe': total_safe,
+                    'unsafe': total_unsafe,
+                    'attack_rate': round(overall_attack_rate, 2)
+                }
+            
+            metadata['eval_metrics'] = eval_metrics
+        except Exception as e:
+            # 如果解析失败，只记录文件存在
+            print(f"⚠️  解析 eval.csv 失败: {e}")
+    
+    # 检查是否有 details 目录
+    details_dir = os.path.join(job_folder, 'details')
+    if os.path.exists(details_dir):
+        metadata['files']['details'] = 'details/'
+    
+    # 写入 YAML 文件
+    yaml_path = os.path.join(job_folder, 'metadata.yaml')
+    with open(yaml_path, 'w', encoding='utf-8') as f:
+        # 手动写入 YAML（避免依赖 PyYAML）
+        def write_yaml_dict(d, indent=0):
+            for key, value in d.items():
+                if isinstance(value, dict):
+                    f.write(f"{' ' * indent}{key}:\n")
+                    write_yaml_dict(value, indent + 2)
+                elif isinstance(value, list):
+                    f.write(f"{' ' * indent}{key}:\n")
+                    for item in value:
+                        f.write(f"{' ' * (indent + 2)}- {item}\n")
+                elif value is None:
+                    f.write(f"{' ' * indent}{key}: null\n")
+                elif isinstance(value, str):
+                    # 处理包含特殊字符的字符串
+                    if ':' in value or '#' in value or value.startswith('-'):
+                        f.write(f"{' ' * indent}{key}: \"{value}\"\n")
+                    else:
+                        f.write(f"{' ' * indent}{key}: {value}\n")
+                else:
+                    f.write(f"{' ' * indent}{key}: {value}\n")
+        
+        write_yaml_dict(metadata)
+    
+    print(f"✅ Metadata 已保存: {yaml_path}")
 
 def clean_vsp_paths(vsp_output_dir: str) -> Dict[str, int]:
     """
@@ -865,12 +1089,15 @@ if __name__ == "__main__":
         print(f"   有效的选项: {', '.join(MMSB_IMAGE_QUESTION_MAP.keys())}")
         sys.exit(1)
     
-    # 如果未指定 save_path，自动生成带时间戳的文件名（不含任务数）
+    # 如果未指定 save_path，创建 job 文件夹并设置输出路径
     auto_generated_save_path = args.save_path is None
     task_num = None  # 任务编号（用于最终重命名）
+    temp_job_folder = None  # 临时 job 文件夹（不含任务数）
+    console_logger = None  # 控制台日志记录器
+    console_log_path = None  # 控制台日志文件路径
     
     if auto_generated_save_path:
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        timestamp = datetime.now().strftime("%m%d_%H%M%S")  # 新格式：MMDD_HHMMSS
         # 清理 model 中可能不适合文件名的字符
         safe_model_name = re.sub(r'[^\w\-.]', '_', args.model)
         
@@ -878,21 +1105,23 @@ if __name__ == "__main__":
         task_num = get_next_task_num()
         print(f"🔢 任务编号: {task_num}")
         
-        # 如果使用了采样，添加采样信息到文件名
-        sampling_suffix = ""
-        if args.sampling_rate < 1.0:
-            sampling_suffix = f"_sampled_{args.sampling_rate:.2f}_seed{args.sampling_seed}"
+        # 转换 provider 名称为 CamelCase
+        provider_camel = provider_to_camelcase(args.provider)
         
-        if args.provider == "vsp":
-            # VSP 使用 provider 名称作为前缀，并包含模型信息
-            # 临时文件名（不含 task_num 和 tasks_X）
-            args.save_path = f"output/vsp_{safe_model_name}{sampling_suffix}_{timestamp}.jsonl"
-        elif args.provider == "comt_vsp":
-            # CoMT-VSP 使用特定前缀
-            args.save_path = f"output/comt_vsp_{safe_model_name}{sampling_suffix}_{timestamp}.jsonl"
-        else:
-            args.save_path = f"output/{safe_model_name}{sampling_suffix}_{timestamp}.jsonl"
-        print(f"📝 自动生成输出路径（临时）: {args.save_path}")
+        # 创建临时 job 文件夹（不含 tasks 数量，稍后重命名）
+        # 格式：job_{num}_temp_{Provider}_{model}_{timestamp}
+        temp_job_folder = f"output/job_{task_num}_temp_{provider_camel}_{safe_model_name}_{timestamp}"
+        os.makedirs(temp_job_folder, exist_ok=True)
+        print(f"📁 创建临时 job 文件夹: {temp_job_folder}")
+        
+        # 设置控制台日志（双输出：终端 + 文件）
+        console_log_path = os.path.join(temp_job_folder, "console.log")
+        console_logger = ConsoleLogger(console_log_path)
+        sys.stdout = console_logger
+        
+        # 更新 save_path 为 job 文件夹内的 results.jsonl
+        args.save_path = os.path.join(temp_job_folder, "results.jsonl")
+        print(f"📝 输出路径: {args.save_path}")
 
     # 验证采样参数
     if not 0.0 <= args.sampling_rate <= 1.0:
@@ -914,6 +1143,7 @@ if __name__ == "__main__":
         comt_sample_id=args.comt_sample_id,
         sampling_rate=args.sampling_rate,
         sampling_seed=args.sampling_seed,
+        job_folder=temp_job_folder,
     )
 
     # ============ 步骤 1: Request（生成答案）============
@@ -933,65 +1163,45 @@ if __name__ == "__main__":
     
     request_duration = time.time() - request_start
     
-    # 如果是自动生成的文件名，根据实际任务数重命名
-    # 新命名格式：{task_num}_sampled_{rate}_seed{seed}_tasks_{total}_{provider}_{model}_{timestamp}.jsonl
+    # 重命名 job 文件夹以包含实际任务数
+    final_job_folder = temp_job_folder
     final_jsonl_path = args.save_path
-    vsp_batch_dir_renamed = None  # 重命名后的 VSP 详细输出目录
     
-    if auto_generated_save_path and total_tasks > 0 and task_num is not None:
-        old_path = args.save_path
-        # 提取文件名和目录
-        dir_path = os.path.dirname(old_path)
-        filename = os.path.basename(old_path)
+    if auto_generated_save_path and total_tasks > 0 and task_num is not None and temp_job_folder:
+        # 从临时文件夹名中提取时间戳、provider、model等信息
+        # temp_job_folder 格式: output/job_{num}_temp_{Provider}_{model}_{timestamp}
+        parts = os.path.basename(temp_job_folder).split('_')
+        # 提取: job_104_temp_ComtVsp_model_timestamp
+        # 新格式: job_104_tasks_202_ComtVsp_model_timestamp
         
-        # 构建新文件名，采样信息在前面
-        # 使用与 VSP 批次目录相同的时间戳（如果是 VSP provider）
-        if cfg.provider in ["vsp", "comt_vsp"] and hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
-            timestamp = cfg.vsp_batch_timestamp
-        else:
-            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # 重新构建最终文件夹名
+        timestamp_match = re.search(r'_(\d{4}_\d{6})$', temp_job_folder)
+        timestamp = timestamp_match.group(1) if timestamp_match else datetime.now().strftime("%m%d_%H%M%S")
+        
         safe_model_name = re.sub(r'[^\w\-.]', '_', args.model)
+        provider_camel = provider_to_camelcase(args.provider)
         
-        # 采样标记（如果有采样）
-        sampling_prefix = ""
-        if args.sampling_rate < 1.0:
-            sampling_prefix = f"_sampled_{args.sampling_rate:.2f}_seed{args.sampling_seed}"
+        # 最终文件夹名：job_{num}_tasks_{total}_{Provider}_{model}_{timestamp}
+        final_job_folder = f"output/job_{task_num}_tasks_{total_tasks}_{provider_camel}_{safe_model_name}_{timestamp}"
         
-        # 根据 provider 构建文件名
-        if args.provider == "vsp":
-            new_filename = f"{task_num}{sampling_prefix}_tasks_{total_tasks}_vsp_{safe_model_name}_{timestamp}.jsonl"
-        elif args.provider == "comt_vsp":
-            new_filename = f"{task_num}{sampling_prefix}_tasks_{total_tasks}_comt_vsp_{safe_model_name}_{timestamp}.jsonl"
-        else:
-            new_filename = f"{task_num}{sampling_prefix}_tasks_{total_tasks}_{safe_model_name}_{timestamp}.jsonl"
-        
-        new_path = os.path.join(dir_path, new_filename)
-        
-        if os.path.exists(old_path):
-            os.rename(old_path, new_path)
-            final_jsonl_path = new_path
-            print(f"✅ 文件已重命名: {new_path}")
-        
-        # 如果使用了 VSP，同时重命名详细输出目录
-        if cfg.provider in ["vsp", "comt_vsp"] and hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
-            if cfg.provider == "vsp":
-                vsp_output_base = "output/vsp_details"
-            else:
-                vsp_output_base = "output/comt_vsp_details"
+        if os.path.exists(temp_job_folder):
+            os.rename(temp_job_folder, final_job_folder)
+            print(f"✅ Job 文件夹已重命名: {final_job_folder}")
             
-            old_vsp_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
-            new_vsp_dir = os.path.join(vsp_output_base, f"{task_num}_tasks_{total_tasks}_vsp_{cfg.vsp_batch_timestamp}")
-            
-            if os.path.exists(old_vsp_dir):
-                os.rename(old_vsp_dir, new_vsp_dir)
-                vsp_batch_dir_renamed = new_vsp_dir
-                print(f"✅ VSP 详细输出目录已重命名: {new_vsp_dir}")
+            # 更新文件路径
+            final_jsonl_path = os.path.join(final_job_folder, "results.jsonl")
+            cfg.job_folder = final_job_folder
+            cfg.save_path = final_jsonl_path
     
     if stop_reason:
         print(f"\n⚠️  自动停止原因: {stop_reason}")
     print(f"\n✅ 步骤 1 完成")
     print(f"   耗时: {format_time(request_duration)}")
     print(f"   输出文件: {final_jsonl_path}\n")
+    # 初始化时长变量
+    eval_duration = None
+    vsp_duration = None
+    clean_duration = None
     
     # ============ 步骤 2 & 3: 评估答案并计算指标 ============
     if not args.skip_eval and not stop_reason:
@@ -1038,22 +1248,11 @@ if __name__ == "__main__":
             
             clean_start = time.time()
             
-            # 使用重命名后的目录（如果有）
-            if vsp_batch_dir_renamed:
-                vsp_batch_dir = vsp_batch_dir_renamed
+            # VSP 详细输出在 job 文件夹的 details 子目录
+            if final_job_folder:
+                vsp_batch_dir = os.path.join(final_job_folder, "details")
             else:
-                # 确定 VSP 输出目录
-                if cfg.provider == "vsp":
-                    vsp_output_base = "output/vsp_details"
-                elif cfg.provider == "comt_vsp":
-                    vsp_output_base = "output/comt_vsp_details"
-                else:
-                    vsp_output_base = "output/vsp_details"
-                
-                if hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
-                    vsp_batch_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
-                else:
-                    vsp_batch_dir = None
+                vsp_batch_dir = None
             
             # 清理整个批次的输出目录
             if vsp_batch_dir:
@@ -1111,22 +1310,11 @@ if __name__ == "__main__":
             
             clean_start = time.time()
             
-            # 使用重命名后的目录（如果有）
-            if vsp_batch_dir_renamed:
-                vsp_batch_dir = vsp_batch_dir_renamed
+            # VSP 详细输出在 job 文件夹的 details 子目录
+            if final_job_folder:
+                vsp_batch_dir = os.path.join(final_job_folder, "details")
             else:
-                # 确定 VSP 输出目录
-                if cfg.provider == "vsp":
-                    vsp_output_base = "output/vsp_details"
-                elif cfg.provider == "comt_vsp":
-                    vsp_output_base = "output/comt_vsp_details"
-                else:
-                    vsp_output_base = "output/vsp_details"
-                
-                if hasattr(cfg, 'vsp_batch_timestamp') and cfg.vsp_batch_timestamp:
-                    vsp_batch_dir = os.path.join(vsp_output_base, f"vsp_{cfg.vsp_batch_timestamp}")
-                else:
-                    vsp_batch_dir = None
+                vsp_batch_dir = None
             
             # 清理整个批次的输出目录
             if vsp_batch_dir:
@@ -1145,3 +1333,27 @@ if __name__ == "__main__":
             print(f"   耗时: {format_time(clean_duration)}\n")
     else:
         print(f"\n⏭️  跳过评估步骤（使用 --skip_eval）")
+    
+    # 恢复标准输出并关闭日志文件
+    if console_logger:
+        sys.stdout = console_logger.terminal
+        console_logger.close()
+        print(f"📝 控制台日志已保存: {console_log_path}")    
+    # 生成 metadata.yaml
+    if auto_generated_save_path and final_job_folder and task_num is not None:
+        print(f"\n{'='*80}")
+        print(f"📄 生成 Job Metadata")
+        print(f"{'='*80}\n")
+        
+        generate_metadata_yaml(
+            job_folder=final_job_folder,
+            task_num=task_num,
+            command=sys.argv,
+            cfg=cfg,
+            total_tasks=total_tasks,
+            request_duration=request_duration,
+            eval_duration=eval_duration,
+            vsp_duration=vsp_duration,
+            clean_duration=clean_duration,
+            stop_reason=stop_reason
+        )

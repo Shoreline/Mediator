@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-清理 output/ 目录中任务数小于阈值的文件，或清理特定任务编号的文件
+清理 output/ 目录中任务数小于阈值的 job 文件夹，或清理特定任务编号的 job
 
 使用方法：
     # 预览将要删除的文件（不实际删除）
     python cleanup_output.py --dry-run
     
-    # 清理任务数 < 100 的文件（默认）
+    # 清理任务数 < 100 的 job（默认）
     python cleanup_output.py
     
-    # 清理任务数 < 50 的文件
+    # 清理任务数 < 50 的 job
     python cleanup_output.py --threshold 50
     
-    # 清理特定任务编号的所有文件
+    # 清理特定任务编号的所有 job
     python cleanup_output.py --job-num 42
     
-    # 清理多个任务编号的文件
+    # 清理多个任务编号的 job
     python cleanup_output.py --job-num 42 43 44
     
     # 自动确认删除（不需要交互）
@@ -26,161 +26,87 @@ import os
 import re
 import glob
 import argparse
-from collections import defaultdict
 from typing import List, Dict, Tuple
 
 
-def parse_jsonl_filename(filename: str) -> Tuple[int, int, str]:
+def parse_job_folder_name(folder_name: str) -> Tuple[int, int, str, str, str]:
     """
-    从 JSONL 文件名中提取信息
+    从 job 文件夹名称中提取信息
     
-    支持的格式：
-    1. 无采样: {job_num}_tasks_{total}_{rest}.jsonl
-    2. 有采样: {job_num}_sampled_{rate}_seed{seed}_tasks_{total}_{rest}.jsonl
+    格式: job_{num}_tasks_{total}_{Provider}_{model}_{timestamp}
+    例如: job_104_tasks_202_ComtVsp_qwen3-vl-8b_0104_193618
     
     Returns:
-        (job_num, task_count, timestamp_and_model) 或 (None, None, None) 如果无法解析
+        (job_num, task_count, provider, model, timestamp) 或 (None, None, None, None, None) 如果无法解析
     """
-    # 尝试匹配有采样的格式
-    pattern1 = r'^(\d+)_sampled_[\d.]+_seed\d+_tasks_(\d+)_(.+)\.jsonl$'
-    match = re.match(pattern1, filename)
+    pattern = r'^job_(\d+)_tasks_(\d+)_([^_]+)_(.+)_(\d{4}_\d{6})$'
+    match = re.match(pattern, folder_name)
+    
     if match:
         job_num = int(match.group(1))
         task_count = int(match.group(2))
-        rest = match.group(3)
-        return job_num, task_count, rest
+        provider = match.group(3)
+        model = match.group(4)
+        timestamp = match.group(5)
+        return job_num, task_count, provider, model, timestamp
     
-    # 尝试匹配无采样的格式
-    pattern2 = r'^(\d+)_tasks_(\d+)_(.+)\.jsonl$'
-    match = re.match(pattern2, filename)
-    if match:
-        job_num = int(match.group(1))
-        task_count = int(match.group(2))
-        rest = match.group(3)
-        return job_num, task_count, rest
-    
-    return None, None, None
+    return None, None, None, None, None
 
 
-def find_related_files(jsonl_filename: str, output_dir: str = 'output') -> List[str]:
+def find_job_folders_to_cleanup(output_dir: str = 'output', threshold: int = 100) -> Dict[str, Dict]:
     """
-    根据 JSONL 文件名查找所有相关文件
-    
-    相关文件包括：
-    1. 原始 JSONL 文件
-    2. CSV 评估文件
-    3. eval_debug.jsonl 文件
-    4. VSP/CoMT-VSP 详细输出目录
-    5. 采样版本的 CSV 文件
-    
-    Returns:
-        相关文件和目录的路径列表
-    """
-    related = []
-    
-    # 1. 原始 JSONL 文件
-    jsonl_path = os.path.join(output_dir, jsonl_filename)
-    if os.path.exists(jsonl_path):
-        related.append(jsonl_path)
-    
-    # 提取基础信息
-    basename = jsonl_filename.replace('.jsonl', '')
-    
-    # 2. eval_debug.jsonl 文件
-    eval_debug_path = os.path.join(output_dir, f"{basename}_eval_debug.jsonl")
-    if os.path.exists(eval_debug_path):
-        related.append(eval_debug_path)
-    
-    # 3. CSV 文件（可能有多种格式）
-    # 格式1: {job_num}_eval_tasks_{total}_{rest}.csv
-    # 格式2: {job_num}_eval-sampled_{rate}_seed{seed}_tasks_{total}_{rest}.csv
-    
-    # 解析 JSONL 文件名以构建 CSV 文件名
-    job_num, task_count, rest = parse_jsonl_filename(jsonl_filename)
-    
-    if job_num is not None:
-        # 查找所有可能的 CSV 文件（包括采样和非采样版本）
-        csv_patterns = [
-            f"{job_num}_eval_tasks_{task_count}_*.csv",
-            f"{job_num}_eval-sampled_*_tasks_{task_count}_*.csv",
-            f"eval_{job_num}_*_tasks_{task_count}_*.csv",  # 新格式
-        ]
-        
-        for pattern in csv_patterns:
-            csv_files = glob.glob(os.path.join(output_dir, pattern))
-            related.extend(csv_files)
-    
-    # 4. VSP/CoMT-VSP 详细输出目录
-    # 从文件名中提取 timestamp
-    timestamp_match = re.search(r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})', basename)
-    if timestamp_match:
-        timestamp = timestamp_match.group(1)
-        
-        # VSP 目录格式
-        vsp_dirs = [
-            f"{output_dir}/vsp_details/vsp_{timestamp}",
-            f"{output_dir}/vsp_details/{job_num}_tasks_{task_count}_vsp_{timestamp}",
-            f"{output_dir}/comt_vsp_details/vsp_{timestamp}",
-            f"{output_dir}/comt_vsp_details/{job_num}_tasks_{task_count}_vsp_{timestamp}",
-        ]
-        
-        for vsp_dir in vsp_dirs:
-            if os.path.exists(vsp_dir):
-                related.append(vsp_dir)
-    
-    return related
-
-
-def find_files_to_cleanup(output_dir: str = 'output', threshold: int = 100) -> Dict[str, List[str]]:
-    """
-    查找需要清理的文件
+    查找需要清理的 job 文件夹
     
     Args:
         output_dir: output 目录路径
-        threshold: 任务数阈值，小于此值的文件将被清理
+        threshold: 任务数阈值，小于此值的 job 将被清理
     
     Returns:
-        {jsonl_filename: [related_files_list]}
+        {folder_name: {job_num, task_count, provider, model, timestamp, path, size}}
     """
     cleanup_candidates = {}
     
-    # 查找所有 JSONL 文件
-    jsonl_files = glob.glob(os.path.join(output_dir, '*.jsonl'))
+    # 查找所有 job_ 开头的目录
+    job_folders = glob.glob(os.path.join(output_dir, 'job_*'))
     
-    for jsonl_path in jsonl_files:
-        filename = os.path.basename(jsonl_path)
-        
-        # 跳过 eval_debug.jsonl 文件（这些会通过主 JSONL 文件一起处理）
-        if filename.endswith('_eval_debug.jsonl'):
+    for folder_path in job_folders:
+        if not os.path.isdir(folder_path):
             continue
         
-        # 解析文件名
-        job_num, task_count, rest = parse_jsonl_filename(filename)
+        folder_name = os.path.basename(folder_path)
+        
+        # 解析文件夹名
+        job_num, task_count, provider, model, timestamp = parse_job_folder_name(folder_name)
         
         if job_num is None or task_count is None:
-            # 无法解析的文件名，跳过
+            # 无法解析的文件夹名，跳过
             continue
         
         # 检查是否低于阈值
         if task_count < threshold:
-            # 查找所有相关文件
-            related_files = find_related_files(filename, output_dir)
-            if related_files:
-                cleanup_candidates[filename] = related_files
+            cleanup_candidates[folder_name] = {
+                'job_num': job_num,
+                'task_count': task_count,
+                'provider': provider,
+                'model': model,
+                'timestamp': timestamp,
+                'path': folder_path,
+                'size': get_dir_size(folder_path)
+            }
     
     return cleanup_candidates
 
 
-def find_files_by_job_num(output_dir: str = 'output', job_nums: List[int] = None) -> Dict[str, List[str]]:
+def find_job_folders_by_job_num(output_dir: str = 'output', job_nums: List[int] = None) -> Dict[str, Dict]:
     """
-    查找特定任务编号的所有文件
+    查找特定任务编号的所有 job 文件夹
     
     Args:
         output_dir: output 目录路径
         job_nums: 要查找的任务编号列表
     
     Returns:
-        {jsonl_filename: [related_files_list]}
+        {folder_name: {job_num, task_count, provider, model, timestamp, path, size}}
     """
     if job_nums is None:
         job_nums = []
@@ -188,29 +114,33 @@ def find_files_by_job_num(output_dir: str = 'output', job_nums: List[int] = None
     cleanup_candidates = {}
     job_nums_set = set(job_nums)
     
-    # 查找所有 JSONL 文件
-    jsonl_files = glob.glob(os.path.join(output_dir, '*.jsonl'))
+    # 查找所有 job_ 开头的目录
+    job_folders = glob.glob(os.path.join(output_dir, 'job_*'))
     
-    for jsonl_path in jsonl_files:
-        filename = os.path.basename(jsonl_path)
-        
-        # 跳过 eval_debug.jsonl 文件（这些会通过主 JSONL 文件一起处理）
-        if filename.endswith('_eval_debug.jsonl'):
+    for folder_path in job_folders:
+        if not os.path.isdir(folder_path):
             continue
         
-        # 解析文件名
-        job_num, task_count, rest = parse_jsonl_filename(filename)
+        folder_name = os.path.basename(folder_path)
+        
+        # 解析文件夹名
+        job_num, task_count, provider, model, timestamp = parse_job_folder_name(folder_name)
         
         if job_num is None:
-            # 无法解析的文件名，跳过
+            # 无法解析的文件夹名，跳过
             continue
         
         # 检查是否是要删除的任务编号
         if job_num in job_nums_set:
-            # 查找所有相关文件
-            related_files = find_related_files(filename, output_dir)
-            if related_files:
-                cleanup_candidates[filename] = related_files
+            cleanup_candidates[folder_name] = {
+                'job_num': job_num,
+                'task_count': task_count,
+                'provider': provider,
+                'model': model,
+                'timestamp': timestamp,
+                'path': folder_path,
+                'size': get_dir_size(folder_path)
+            }
     
     return cleanup_candidates
 
@@ -224,12 +154,10 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} TB"
 
 
-def get_file_or_dir_size(path: str) -> int:
-    """获取文件或目录的总大小"""
-    if os.path.isfile(path):
-        return os.path.getsize(path)
-    elif os.path.isdir(path):
-        total = 0
+def get_dir_size(path: str) -> int:
+    """获取目录的总大小"""
+    total = 0
+    if os.path.isdir(path):
         for dirpath, dirnames, filenames in os.walk(path):
             for filename in filenames:
                 filepath = os.path.join(dirpath, filename)
@@ -237,105 +165,98 @@ def get_file_or_dir_size(path: str) -> int:
                     total += os.path.getsize(filepath)
                 except OSError:
                     pass
-        return total
-    return 0
+    return total
 
 
-def print_cleanup_summary(cleanup_candidates: Dict[str, List[str]]):
+def print_cleanup_summary(cleanup_candidates: Dict[str, Dict]):
     """打印清理摘要"""
     if not cleanup_candidates:
-        print("\n✅ 没有找到需要清理的文件")
+        print("\n✅ 没有找到需要清理的 job 文件夹")
         return
     
     print(f"\n{'='*80}")
     print(f"🗑️  清理摘要")
     print(f"{'='*80}\n")
     
-    total_files = 0
-    total_dirs = 0
     total_size = 0
     
-    for i, (jsonl_filename, related_files) in enumerate(sorted(cleanup_candidates.items()), 1):
-        # 解析信息
-        job_num, task_count, rest = parse_jsonl_filename(jsonl_filename)
+    for i, (folder_name, info) in enumerate(sorted(cleanup_candidates.items(), key=lambda x: x[1]['job_num']), 1):
+        job_num = info['job_num']
+        task_count = info['task_count']
+        provider = info['provider']
+        model = info['model']
+        timestamp = info['timestamp']
+        size = info['size']
         
         print(f"{i}. Job {job_num} (tasks={task_count})")
-        print(f"   主文件: {jsonl_filename}")
+        print(f"   文件夹: {folder_name}")
+        print(f"   Provider: {provider}")
+        print(f"   Model: {model}")
+        print(f"   Timestamp: {timestamp}")
+        print(f"   大小: {format_file_size(size)}")
         
-        files_count = 0
-        dirs_count = 0
-        group_size = 0
-        
-        for related_path in related_files:
-            size = get_file_or_dir_size(related_path)
-            group_size += size
+        # 列出文件夹内容
+        folder_path = info['path']
+        if os.path.exists(folder_path):
+            contents = []
+            for item in os.listdir(folder_path):
+                item_path = os.path.join(folder_path, item)
+                if os.path.isdir(item_path):
+                    contents.append(f"[DIR]  {item}")
+                else:
+                    contents.append(f"[FILE] {item}")
             
-            if os.path.isdir(related_path):
-                dirs_count += 1
-                total_dirs += 1
-                print(f"   └─ [DIR]  {os.path.basename(related_path)} ({format_file_size(size)})")
-            else:
-                files_count += 1
-                total_files += 1
-                print(f"   └─ [FILE] {os.path.basename(related_path)} ({format_file_size(size)})")
+            if contents:
+                print(f"   内容:")
+                for content in sorted(contents):
+                    print(f"     └─ {content}")
         
-        total_size += group_size
-        print(f"   小计: {files_count} 个文件, {dirs_count} 个目录, {format_file_size(group_size)}")
+        total_size += size
         print()
     
     print(f"{'='*80}")
-    print(f"总计: {len(cleanup_candidates)} 个 job, {total_files} 个文件, {total_dirs} 个目录")
+    print(f"总计: {len(cleanup_candidates)} 个 job 文件夹")
     print(f"将释放空间: {format_file_size(total_size)}")
     print(f"{'='*80}\n")
 
 
-def delete_files_and_dirs(file_list: List[str]) -> Tuple[int, int]:
+def delete_job_folder(folder_path: str) -> bool:
     """
-    删除文件和目录
+    删除 job 文件夹
     
     Returns:
-        (deleted_files, deleted_dirs)
+        True if successful, False otherwise
     """
     import shutil
     
-    deleted_files = 0
-    deleted_dirs = 0
-    
-    for path in file_list:
-        try:
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-                deleted_dirs += 1
-                print(f"  ✅ 已删除目录: {path}")
-            elif os.path.isfile(path):
-                os.remove(path)
-                deleted_files += 1
-                print(f"  ✅ 已删除文件: {path}")
-        except Exception as e:
-            print(f"  ❌ 删除失败 {path}: {e}")
-    
-    return deleted_files, deleted_dirs
+    try:
+        shutil.rmtree(folder_path)
+        print(f"  ✅ 已删除: {folder_path}")
+        return True
+    except Exception as e:
+        print(f"  ❌ 删除失败 {folder_path}: {e}")
+        return False
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="清理 output/ 目录中任务数小于阈值的文件，或清理特定任务编号的文件",
+        description="清理 output/ 目录中任务数小于阈值的 job 文件夹，或清理特定任务编号的 job",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
   # 预览将要删除的文件（不实际删除）
   python cleanup_output.py --dry-run
   
-  # 清理任务数 < 100 的文件（默认）
+  # 清理任务数 < 100 的 job（默认）
   python cleanup_output.py
   
-  # 清理任务数 < 50 的文件
+  # 清理任务数 < 50 的 job
   python cleanup_output.py --threshold 50
   
-  # 清理特定任务编号的所有文件
+  # 清理特定任务编号的所有 job
   python cleanup_output.py --job-num 42
   
-  # 清理多个任务编号的文件
+  # 清理多个任务编号的 job
   python cleanup_output.py --job-num 42 43 44
   
   # 自动确认删除（不需要交互）
@@ -344,7 +265,7 @@ def main():
     )
     
     parser.add_argument('--threshold', type=int, default=100,
-                       help='任务数阈值，小于此值的文件将被清理（默认: 100）')
+                       help='任务数阈值，小于此值的 job 将被清理（默认: 100）')
     parser.add_argument('--job-num', type=int, nargs='+', metavar='NUM',
                        help='指定要清理的任务编号（可以指定多个）')
     parser.add_argument('--output_dir', default='output',
@@ -362,7 +283,7 @@ def main():
         return
     
     print(f"{'='*80}")
-    print(f"🧹 output/ 目录清理工具")
+    print(f"🧹 output/ 目录清理工具（新版 - 基于 job 文件夹）")
     print(f"{'='*80}")
     print(f"目录: {args.output_dir}")
     
@@ -377,15 +298,15 @@ def main():
         print(f"预览模式: 不会实际删除")
     print(f"{'='*80}\n")
     
-    # 查找需要清理的文件
-    print("🔍 扫描文件...")
+    # 查找需要清理的 job 文件夹
+    print("🔍 扫描 job 文件夹...")
     if args.job_num:
-        cleanup_candidates = find_files_by_job_num(args.output_dir, args.job_num)
+        cleanup_candidates = find_job_folders_by_job_num(args.output_dir, args.job_num)
     else:
-        cleanup_candidates = find_files_to_cleanup(args.output_dir, args.threshold)
+        cleanup_candidates = find_job_folders_to_cleanup(args.output_dir, args.threshold)
     
     if not cleanup_candidates:
-        print("\n✅ 没有找到需要清理的文件")
+        print("\n✅ 没有找到需要清理的 job 文件夹")
         return
     
     # 打印摘要
@@ -399,7 +320,7 @@ def main():
     
     # 询问用户确认
     if not args.yes:
-        response = input("❓ 确认删除以上文件？(yes/no): ").strip().lower()
+        response = input("❓ 确认删除以上 job 文件夹？(yes/no): ").strip().lower()
         if response not in ['yes', 'y']:
             print("\n❌ 取消删除")
             return
@@ -409,28 +330,25 @@ def main():
     print(f"🗑️  开始删除...")
     print(f"{'='*80}\n")
     
-    total_deleted_files = 0
-    total_deleted_dirs = 0
+    deleted_count = 0
     
-    for jsonl_filename, related_files in sorted(cleanup_candidates.items()):
-        job_num, task_count, _ = parse_jsonl_filename(jsonl_filename)
+    for folder_name, info in sorted(cleanup_candidates.items(), key=lambda x: x[1]['job_num']):
+        job_num = info['job_num']
+        task_count = info['task_count']
+        folder_path = info['path']
+        
         print(f"\n🗑️  删除 Job {job_num} (tasks={task_count}):")
         
-        deleted_files, deleted_dirs = delete_files_and_dirs(related_files)
-        total_deleted_files += deleted_files
-        total_deleted_dirs += deleted_dirs
+        if delete_job_folder(folder_path):
+            deleted_count += 1
     
     # 打印完成摘要
     print(f"\n{'='*80}")
     print(f"✅ 清理完成！")
     print(f"{'='*80}")
-    print(f"已删除: {len(cleanup_candidates)} 个 job")
-    print(f"  - 文件: {total_deleted_files} 个")
-    print(f"  - 目录: {total_deleted_dirs} 个")
+    print(f"已删除: {deleted_count} 个 job 文件夹")
     print(f"{'='*80}\n")
 
 
 if __name__ == "__main__":
     main()
-
-
