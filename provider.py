@@ -570,7 +570,8 @@ class ComtVspProvider(VSPProvider):
         task1_text += "1. Call detection() tool on the image\n"
         task1_text += "2. Analyze the detection results\n"
         task1_text += "3. Count the detected objects\n"
-        task1_text += "4. Provide your final count\n\n"
+        task1_text += "4. If this is a multiple choice question and your count doesn't match any option exactly, select the closest option\n"
+        task1_text += "5. Provide your final count or answer\n\n"
         task1_text += "⚠️ REMINDER: Use the detection() tool. This is MANDATORY. ⚠️\n\n"
         
         # ===== TASK 2: MM-SafetyBench任务 =====

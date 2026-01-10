@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-清理 output/ 目录中任务数小于阈值的文件
+清理 output/ 目录中任务数小于阈值的文件，或清理特定任务编号的文件
 
 使用方法：
     # 预览将要删除的文件（不实际删除）
@@ -11,6 +11,12 @@
     
     # 清理任务数 < 50 的文件
     python cleanup_output.py --threshold 50
+    
+    # 清理特定任务编号的所有文件
+    python cleanup_output.py --job-num 42
+    
+    # 清理多个任务编号的文件
+    python cleanup_output.py --job-num 42 43 44
     
     # 自动确认删除（不需要交互）
     python cleanup_output.py --yes
@@ -165,6 +171,50 @@ def find_files_to_cleanup(output_dir: str = 'output', threshold: int = 100) -> D
     return cleanup_candidates
 
 
+def find_files_by_job_num(output_dir: str = 'output', job_nums: List[int] = None) -> Dict[str, List[str]]:
+    """
+    查找特定任务编号的所有文件
+    
+    Args:
+        output_dir: output 目录路径
+        job_nums: 要查找的任务编号列表
+    
+    Returns:
+        {jsonl_filename: [related_files_list]}
+    """
+    if job_nums is None:
+        job_nums = []
+    
+    cleanup_candidates = {}
+    job_nums_set = set(job_nums)
+    
+    # 查找所有 JSONL 文件
+    jsonl_files = glob.glob(os.path.join(output_dir, '*.jsonl'))
+    
+    for jsonl_path in jsonl_files:
+        filename = os.path.basename(jsonl_path)
+        
+        # 跳过 eval_debug.jsonl 文件（这些会通过主 JSONL 文件一起处理）
+        if filename.endswith('_eval_debug.jsonl'):
+            continue
+        
+        # 解析文件名
+        job_num, task_count, rest = parse_jsonl_filename(filename)
+        
+        if job_num is None:
+            # 无法解析的文件名，跳过
+            continue
+        
+        # 检查是否是要删除的任务编号
+        if job_num in job_nums_set:
+            # 查找所有相关文件
+            related_files = find_related_files(filename, output_dir)
+            if related_files:
+                cleanup_candidates[filename] = related_files
+    
+    return cleanup_candidates
+
+
 def format_file_size(size_bytes: int) -> str:
     """格式化文件大小"""
     for unit in ['B', 'KB', 'MB', 'GB']:
@@ -269,7 +319,7 @@ def delete_files_and_dirs(file_list: List[str]) -> Tuple[int, int]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="清理 output/ 目录中任务数小于阈值的文件",
+        description="清理 output/ 目录中任务数小于阈值的文件，或清理特定任务编号的文件",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
@@ -282,6 +332,12 @@ def main():
   # 清理任务数 < 50 的文件
   python cleanup_output.py --threshold 50
   
+  # 清理特定任务编号的所有文件
+  python cleanup_output.py --job-num 42
+  
+  # 清理多个任务编号的文件
+  python cleanup_output.py --job-num 42 43 44
+  
   # 自动确认删除（不需要交互）
   python cleanup_output.py --yes
         """
@@ -289,6 +345,8 @@ def main():
     
     parser.add_argument('--threshold', type=int, default=100,
                        help='任务数阈值，小于此值的文件将被清理（默认: 100）')
+    parser.add_argument('--job-num', type=int, nargs='+', metavar='NUM',
+                       help='指定要清理的任务编号（可以指定多个）')
     parser.add_argument('--output_dir', default='output',
                        help='output 目录路径（默认: output）')
     parser.add_argument('--dry-run', action='store_true',
@@ -298,18 +356,33 @@ def main():
     
     args = parser.parse_args()
     
+    # 检查互斥参数
+    if args.job_num and args.threshold != 100:
+        print("❌ 错误: --job-num 和 --threshold 不能同时使用")
+        return
+    
     print(f"{'='*80}")
     print(f"🧹 output/ 目录清理工具")
     print(f"{'='*80}")
     print(f"目录: {args.output_dir}")
-    print(f"阈值: tasks < {args.threshold}")
+    
+    if args.job_num:
+        print(f"模式: 按任务编号清理")
+        print(f"任务编号: {', '.join(map(str, sorted(args.job_num)))}")
+    else:
+        print(f"模式: 按任务数阈值清理")
+        print(f"阈值: tasks < {args.threshold}")
+    
     if args.dry_run:
-        print(f"模式: 预览模式（不会实际删除）")
+        print(f"预览模式: 不会实际删除")
     print(f"{'='*80}\n")
     
     # 查找需要清理的文件
     print("🔍 扫描文件...")
-    cleanup_candidates = find_files_to_cleanup(args.output_dir, args.threshold)
+    if args.job_num:
+        cleanup_candidates = find_files_by_job_num(args.output_dir, args.job_num)
+    else:
+        cleanup_candidates = find_files_to_cleanup(args.output_dir, args.threshold)
     
     if not cleanup_candidates:
         print("\n✅ 没有找到需要清理的文件")
