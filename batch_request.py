@@ -96,12 +96,19 @@ args_combo = [
     
     # 需要遍历的参数变体：不同的 provider 和 model 组合
     [
-        
-        '--provider openrouter --model "mistralai/ministral-8b-2512"',
-        '--provider openrouter --model "mistralai/ministral-3b-2512"',
 
-        '--provider comt_vsp --model "mistralai/ministral-8b-2512" --comt_sample_id creation-10003',
-        '--provider comt_vsp --model "mistralai/ministral-3b-2512" --comt_sample_id creation-10003',
+        # '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-instruct" --comt_sample_id deletion-2371',
+        # '--provider comt_vsp --model "google/gemini-2.5-flash" --comt_sample_id deletion-2371',
+        '--provider comt_vsp --model "qwen/qwen3-vl-30b-a3b-instruct" --comt_sample_id deletion-2371',
+        '--provider comt_vsp --model "qwen/qwen3-vl-8b-instruct" --comt_sample_id deletion-2371',
+        '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-thinking" --comt_sample_id deletion-2371',
+        '--provider comt_vsp --model "qwen/qwen3-vl-30b-a3b-thinking" --comt_sample_id deletion-2371',
+        '--provider comt_vsp --model "qwen/qwen3-vl-8b-thinking" --comt_sample_id deletion-2371',
+        # '--provider comt_vsp --model "mistralai/ministral-14b-2512" --comt_sample_id deletion-2371',
+        # '--provider comt_vsp --model "mistralai/ministral-8b-2512" --comt_sample_id deletion-2371',
+        # '--provider comt_vsp --model "mistralai/ministral-3b-2512" --comt_sample_id deletion-2371',
+        # '--provider comt_vsp --model "openai/gpt-5" --comt_sample_id deletion-2371',
+
     ],
 ]
 

@@ -170,7 +170,7 @@ class VSPProvider(BaseProvider):
         task_data = self._build_vsp_task(prompt_struct, vsp_input_dir, task_type)
         
         # 调用VSP（输出保存到vsp_output_dir）
-        result = await self._call_vsp(vsp_input_dir, vsp_output_dir, task_type, model=cfg.model)
+        result = await self._call_vsp(vsp_input_dir, vsp_output_dir, task_type, model=cfg.model, cfg=cfg)
         
         # 从 debug log 中提取答案（VSP 专用方法）
         answer = self._extract_answer_vsp(vsp_output_dir)
@@ -221,7 +221,7 @@ class VSPProvider(BaseProvider):
         """确定任务类型，目前只支持vision"""
         return "vision"
     
-    async def _call_vsp(self, task_dir: str, output_dir: str, task_type: str, model: str = None) -> Dict[str, Any]:
+    async def _call_vsp(self, task_dir: str, output_dir: str, task_type: str, model: str = None, cfg: 'RunConfig' = None) -> Dict[str, Any]:
         """调用VSP工具（使用VSP自带python解释器 + run_agent 入口）"""
 
         # 使用相对路径的python（让shell找VSP venv的python）
@@ -238,6 +238,13 @@ class VSPProvider(BaseProvider):
         # 激活VSP的venv
         vsp_python_bin = os.path.join(self.vsp_path, "sketchpad_env", "bin")
         env["PATH"] = f"{vsp_python_bin}:{env.get('PATH', '')}"
+        
+        # 传递 post-processor 配置（通过环境变量）
+        if cfg:
+            env["VSP_POSTPROC_ENABLED"] = "1" if cfg.vsp_postproc_enabled else "0"
+            env["VSP_POSTPROC_BACKEND"] = cfg.vsp_postproc_backend
+            if cfg.vsp_postproc_method:
+                env["VSP_POSTPROC_METHOD"] = cfg.vsp_postproc_method
 
         try:
             process = await asyncio.create_subprocess_exec(

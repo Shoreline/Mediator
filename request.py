@@ -28,6 +28,20 @@ python request.py \
   --json_glob "/custom/path/*.json" \
   --image_base "/custom/images/" \
   --max_tasks 10
+
+# 7. 使用 VSP 并启用后处理（遮罩检测到的物体）
+python request.py \
+  --provider vsp \
+  --max_tasks 10 \
+  --vsp_postproc \
+  --vsp_postproc_method visual_mask
+
+# 8. 使用 VSP 并启用后处理（修复检测到的物体）
+python request.py \
+  --provider vsp \
+  --max_tasks 10 \
+  --vsp_postproc \
+  --vsp_postproc_method visual_edit
 """
 
 import os, re, json, time, base64, glob, asyncio, random, contextlib, sys
@@ -127,6 +141,10 @@ class RunConfig:
     sampling_rate: float = 1.0  # 采样率（默认1.0，即不采样）
     sampling_seed: int = 42  # 采样随机种子（默认42）
     job_folder: Optional[str] = None  # Job文件夹路径（用于组织输出文件）
+    # VSP Post-Processor settings
+    vsp_postproc_enabled: bool = False  # 启用VSP后处理
+    vsp_postproc_backend: str = "ask"  # 后处理backend: "ask", "sd", etc.
+    vsp_postproc_method: Optional[str] = None  # ASK方法: "visual_mask", "visual_edit", "zoom_in"
 
 # ============ 数据与 Prompt ============
 
@@ -1080,6 +1098,16 @@ if __name__ == "__main__":
     parser.add_argument("--sampling_seed", type=int, default=42,
                        help="采样随机种子。默认: 42。相同种子确保相同的采样结果")
     
+    # VSP Post-Processor参数（仅对 vsp/comt_vsp provider有效）
+    parser.add_argument("--vsp_postproc", action="store_true",
+                       help="启用VSP后处理（默认: False）")
+    parser.add_argument("--vsp_postproc_backend", default="ask",
+                       choices=["ask", "sd"],
+                       help="后处理backend（默认: ask）")
+    parser.add_argument("--vsp_postproc_method", default=None,
+                       choices=["visual_mask", "visual_edit", "zoom_in"],
+                       help="ASK后处理方法（默认: None，使用config.py中的默认值）")
+    
     args = parser.parse_args()
     
     # 验证 image_types 必须在 MMSB_IMAGE_QUESTION_MAP 中
@@ -1144,6 +1172,9 @@ if __name__ == "__main__":
         sampling_rate=args.sampling_rate,
         sampling_seed=args.sampling_seed,
         job_folder=temp_job_folder,
+        vsp_postproc_enabled=args.vsp_postproc,
+        vsp_postproc_backend=args.vsp_postproc_backend,
+        vsp_postproc_method=args.vsp_postproc_method,
     )
 
     # ============ 步骤 1: Request（生成答案）============
