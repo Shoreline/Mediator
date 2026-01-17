@@ -170,7 +170,7 @@ class VSPProvider(BaseProvider):
         task_data = self._build_vsp_task(prompt_struct, vsp_input_dir, task_type)
         
         # 调用VSP（输出保存到vsp_output_dir）
-        result = await self._call_vsp(vsp_input_dir, vsp_output_dir, task_type, model=cfg.model, cfg=cfg)
+        result = await self._call_vsp(vsp_input_dir, vsp_output_dir, task_type, model=cfg.model, cfg=cfg, meta=meta)
         
         # 从 debug log 中提取答案（VSP 专用方法）
         answer = self._extract_answer_vsp(vsp_output_dir)
@@ -221,7 +221,7 @@ class VSPProvider(BaseProvider):
         """确定任务类型，目前只支持vision"""
         return "vision"
     
-    async def _call_vsp(self, task_dir: str, output_dir: str, task_type: str, model: str = None, cfg: 'RunConfig' = None) -> Dict[str, Any]:
+    async def _call_vsp(self, task_dir: str, output_dir: str, task_type: str, model: str = None, cfg: 'RunConfig' = None, meta: Dict[str, Any] = None) -> Dict[str, Any]:
         """调用VSP工具（使用VSP自带python解释器 + run_agent 入口）"""
 
         # 使用相对路径的python（让shell找VSP venv的python）
@@ -245,6 +245,35 @@ class VSPProvider(BaseProvider):
             env["VSP_POSTPROC_BACKEND"] = cfg.vsp_postproc_backend
             if cfg.vsp_postproc_method:
                 env["VSP_POSTPROC_METHOD"] = cfg.vsp_postproc_method
+            
+            # Stable Diffusion (Replicate) 配置
+            if hasattr(cfg, 'vsp_postproc_sd_model'):
+                env["VSP_POSTPROC_SD_MODEL"] = cfg.vsp_postproc_sd_model
+            if hasattr(cfg, 'vsp_postproc_sd_prompt'):
+                env["VSP_POSTPROC_SD_PROMPT"] = cfg.vsp_postproc_sd_prompt
+            if hasattr(cfg, 'vsp_postproc_sd_negative_prompt'):
+                env["VSP_POSTPROC_SD_NEGATIVE_PROMPT"] = cfg.vsp_postproc_sd_negative_prompt
+            if hasattr(cfg, 'vsp_postproc_sd_num_steps'):
+                env["VSP_POSTPROC_SD_NUM_STEPS"] = str(cfg.vsp_postproc_sd_num_steps)
+            if hasattr(cfg, 'vsp_postproc_sd_guidance_scale'):
+                env["VSP_POSTPROC_SD_GUIDANCE_SCALE"] = str(cfg.vsp_postproc_sd_guidance_scale)
+            
+            # 传递 REPLICATE_API_TOKEN（如果存在）
+            if "REPLICATE_API_TOKEN" in os.environ:
+                env["REPLICATE_API_TOKEN"] = os.environ["REPLICATE_API_TOKEN"]
+            
+            # Prebaked processor 配置
+            if hasattr(cfg, 'vsp_postproc_fallback'):
+                env["VSP_POSTPROC_FALLBACK"] = cfg.vsp_postproc_fallback
+            env["VSP_JOB_FOLDER"] = getattr(cfg, 'job_folder', "") or ""
+        
+        # 传递 prebaked processor 需要的上下文信息
+        if meta:
+            env["VSP_MMSB_CATEGORY"] = meta.get("category", "")
+        
+        # 对于 ComtVspProvider，传递 comt_sample_id
+        if hasattr(self, 'comt_sample_id') and self.comt_sample_id:
+            env["VSP_COMT_SAMPLE_ID"] = self.comt_sample_id
 
         try:
             process = await asyncio.create_subprocess_exec(

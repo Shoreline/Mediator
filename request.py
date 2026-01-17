@@ -143,8 +143,15 @@ class RunConfig:
     job_folder: Optional[str] = None  # Job文件夹路径（用于组织输出文件）
     # VSP Post-Processor settings
     vsp_postproc_enabled: bool = False  # 启用VSP后处理
-    vsp_postproc_backend: str = "ask"  # 后处理backend: "ask", "sd", etc.
+    vsp_postproc_backend: str = "ask"  # 后处理backend: "ask", "sd", "prebaked"
     vsp_postproc_method: Optional[str] = None  # ASK方法: "visual_mask", "visual_edit", "zoom_in"
+    vsp_postproc_fallback: str = "ask"  # prebaked缓存未命中时的回退backend
+    # Stable Diffusion (Replicate) settings
+    vsp_postproc_sd_model: str = "lucataco/sdxl-inpainting"
+    vsp_postproc_sd_prompt: str = "remove the objects, fill with natural background"
+    vsp_postproc_sd_negative_prompt: str = "blurry, distorted, artifacts"
+    vsp_postproc_sd_num_steps: int = 50
+    vsp_postproc_sd_guidance_scale: float = 7.5
 
 # ============ 数据与 Prompt ============
 
@@ -1102,11 +1109,26 @@ if __name__ == "__main__":
     parser.add_argument("--vsp_postproc", action="store_true",
                        help="启用VSP后处理（默认: False）")
     parser.add_argument("--vsp_postproc_backend", default="ask",
-                       choices=["ask", "sd"],
-                       help="后处理backend（默认: ask）")
+                       choices=["ask", "sd", "prebaked"],
+                       help="后处理backend（默认: ask）。prebaked会先查找缓存，未命中则使用fallback")
     parser.add_argument("--vsp_postproc_method", default=None,
                        choices=["visual_mask", "visual_edit", "zoom_in"],
                        help="ASK后处理方法（默认: None，使用config.py中的默认值）")
+    parser.add_argument("--vsp_postproc_fallback", default="ask",
+                       choices=["ask", "sd"],
+                       help="prebaked缓存未命中时的回退backend（默认: ask）")
+    
+    # Stable Diffusion (Replicate) 参数
+    parser.add_argument("--vsp_postproc_sd_model", default="lucataco/sdxl-inpainting",
+                       help="Replicate SD模型（默认: lucataco/sdxl-inpainting）")
+    parser.add_argument("--vsp_postproc_sd_prompt", default="remove the objects, fill with natural background",
+                       help="SD inpainting prompt（默认: remove the objects, fill with natural background）")
+    parser.add_argument("--vsp_postproc_sd_negative_prompt", default="blurry, distorted, artifacts",
+                       help="SD negative prompt（默认: blurry, distorted, artifacts）")
+    parser.add_argument("--vsp_postproc_sd_num_steps", type=int, default=50,
+                       help="SD推理步数（默认: 50）")
+    parser.add_argument("--vsp_postproc_sd_guidance_scale", type=float, default=7.5,
+                       help="SD guidance scale（默认: 7.5）")
     
     args = parser.parse_args()
     
@@ -1175,6 +1197,12 @@ if __name__ == "__main__":
         vsp_postproc_enabled=args.vsp_postproc,
         vsp_postproc_backend=args.vsp_postproc_backend,
         vsp_postproc_method=args.vsp_postproc_method,
+        vsp_postproc_fallback=args.vsp_postproc_fallback,
+        vsp_postproc_sd_model=args.vsp_postproc_sd_model,
+        vsp_postproc_sd_prompt=args.vsp_postproc_sd_prompt,
+        vsp_postproc_sd_negative_prompt=args.vsp_postproc_sd_negative_prompt,
+        vsp_postproc_sd_num_steps=args.vsp_postproc_sd_num_steps,
+        vsp_postproc_sd_guidance_scale=args.vsp_postproc_sd_guidance_scale,
     )
 
     # ============ 步骤 1: Request（生成答案）============
