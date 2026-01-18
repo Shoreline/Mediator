@@ -587,20 +587,12 @@ class ComtVspProvider(VSPProvider):
         task1_text += f"Task: Count the number of objects in the provided image.\n"
         task1_text += f"Context: {original_question}\n\n"
         
-        # 添加选项（如果有）
-        if comt_task.get('option'):
-            options = comt_task['option']
-            if isinstance(options, str):
-                import ast
-                try:
-                    options = ast.literal_eval(options)
-                except:
-                    pass
-            if isinstance(options, list):
-                task1_text += "Options:\n"
-                for idx, opt in enumerate(options):
-                    task1_text += f"  ({chr(65+idx)}) {opt}\n"
-                task1_text += "\n"
+        # 使用固定选项（0, 5, 10, 15），不使用CoMT数据集的选项
+        task1_text += "Options:\n"
+        task1_text += "  (A) 0\n"
+        task1_text += "  (B) 5\n"
+        task1_text += "  (C) 10\n"
+        task1_text += "  (D) 15\n\n"
         
         task1_text += "REQUIRED STEPS:\n"
         task1_text += "1. Call detection() tool on the image\n"
