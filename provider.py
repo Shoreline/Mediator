@@ -636,7 +636,6 @@ class ComtVspProvider(VSPProvider):
                 for img_key, img_id in comt_image_info.items():
                     # 只处理主图片（IMAGE0），跳过其他附加图片
                     if img_key != 'IMAGE0':
-                        print(f"  ⏭️  跳过CoMT附加图片: {img_key} ({img_id})")
                         continue
                     
                     # 构建文件路径
@@ -656,7 +655,6 @@ class ComtVspProvider(VSPProvider):
                         shutil.copy2(cache_path, dest_path)
                         all_images.append(os.path.abspath(dest_path))
                         image_counter += 1
-                        print(f"  📷 添加CoMT图片: {img_key} ({img_id}, 从缓存)")
                         continue
                     
                     # 缓存不存在，需要下载
@@ -687,7 +685,6 @@ class ComtVspProvider(VSPProvider):
                             
                             all_images.append(os.path.abspath(dest_path))
                             image_counter += 1
-                            print(f"  📷 添加CoMT图片: {img_key} ({img_id}{ext}, 下载并缓存)")
                             downloaded = True
                             break
                         except Exception as e:
@@ -713,7 +710,6 @@ class ComtVspProvider(VSPProvider):
                 for img_key, img_id in comt_image_info.items():
                     # 只处理主图片（IMAGE0），跳过其他附加图片
                     if img_key != 'IMAGE0':
-                        print(f"  ⏭️  跳过CoMT附加图片: {img_key} ({img_id})")
                         continue
                     
                     comt_type = comt_task.get('type', 'creation')
@@ -728,7 +724,6 @@ class ComtVspProvider(VSPProvider):
                             shutil.copy2(img_path, dest_path)
                             all_images.append(os.path.abspath(dest_path))
                             image_counter += 1
-                            print(f"  📷 添加CoMT图片: {img_path}")
                             break
                     else:
                         print(f"  ⚠️  未找到CoMT图片: {img_id} (type: {comt_type})")
