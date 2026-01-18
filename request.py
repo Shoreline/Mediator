@@ -144,7 +144,7 @@ class RunConfig:
     # VSP Post-Processor settings
     vsp_postproc_enabled: bool = False  # 启用VSP后处理
     vsp_postproc_backend: str = "ask"  # 后处理backend: "ask", "sd", "prebaked"
-    vsp_postproc_method: Optional[str] = None  # ASK方法: "visual_mask", "visual_edit", "zoom_in"
+    vsp_postproc_method: Optional[str] = None  # ASK: visual_mask/visual_edit/zoom_in/blur; SD: good/bad
     vsp_postproc_fallback: str = "ask"  # prebaked缓存未命中时的回退backend
     # Stable Diffusion (Replicate) settings
     vsp_postproc_sd_model: str = "lucataco/sdxl-inpainting"
@@ -1248,8 +1248,8 @@ if __name__ == "__main__":
                        choices=["ask", "sd", "prebaked"],
                        help="后处理backend（默认: ask）。prebaked会先查找缓存，未命中则使用fallback")
     parser.add_argument("--vsp_postproc_method", default=None,
-                       choices=["visual_mask", "visual_edit", "zoom_in"],
-                       help="ASK后处理方法（默认: None，使用config.py中的默认值）")
+                       choices=["visual_mask", "visual_edit", "zoom_in", "blur", "good", "bad"],
+                       help="后处理方法。ASK: visual_mask/visual_edit/zoom_in/blur; SD: good/bad")
     parser.add_argument("--vsp_postproc_fallback", default="ask",
                        choices=["ask", "sd"],
                        help="prebaked缓存未命中时的回退backend（默认: ask）")

@@ -14,6 +14,14 @@
     
     最终会生成所有变体的笛卡尔积组合
 
+输出结构：
+    output/batch_{first_job_num}_{timestamp}/
+    ├── batch_summary.html          # 批次汇总报告
+    ├── batch.log                   # 批次运行日志
+    ├── job_{num}_tasks_{n}_.../    # 第一个任务
+    ├── job_{num}_tasks_{n}_.../    # 第二个任务
+    └── ...
+
 示例：
     args_combo = [
         "--categories 12-Health_Consultation",  # 固定参数
@@ -31,9 +39,12 @@
 import subprocess
 import sys
 import os
+import shutil
 import itertools
 import re
 import time
+import base64
+from io import BytesIO
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import List, Optional, TextIO
@@ -59,6 +70,35 @@ class TeeWriter:
 # 全局日志文件句柄
 _log_file: Optional[TextIO] = None
 _original_stdout = None
+
+
+# ============ Batch Counter（单调递增的批次编号）============
+
+BATCH_COUNTER_FILE = "output/.batch_counter"
+
+def get_next_batch_num() -> int:
+    """
+    获取下一个批次编号（单调递增，从1开始）
+    
+    Returns:
+        下一个可用的批次编号
+    """
+    os.makedirs("output", exist_ok=True)
+    
+    current_num = 0
+    if os.path.exists(BATCH_COUNTER_FILE):
+        try:
+            with open(BATCH_COUNTER_FILE, 'r') as f:
+                current_num = int(f.read().strip())
+        except (ValueError, IOError):
+            current_num = 0
+    
+    next_num = current_num + 1
+    
+    with open(BATCH_COUNTER_FILE, 'w') as f:
+        f.write(str(next_num))
+    
+    return next_num
 
 
 def setup_logging(log_path: str):
@@ -92,23 +132,12 @@ def close_logging():
 # - 列表：需要遍历的参数变体
 args_combo = [
     # 固定参数：类别和任务数
-    "--sampling_rate 0.12",
+    "--model 'qwen/qwen3-vl-235b-a22b-instruct' --max_tasks 2",
     
     # 需要遍历的参数变体：不同的 provider 和 model 组合
     [
-
-        # '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-instruct" --comt_sample_id deletion-2371',
-        # '--provider comt_vsp --model "google/gemini-2.5-flash" --comt_sample_id deletion-2371',
-        '--provider comt_vsp --model "qwen/qwen3-vl-30b-a3b-instruct" --comt_sample_id deletion-2371',
-        '--provider comt_vsp --model "qwen/qwen3-vl-8b-instruct" --comt_sample_id deletion-2371',
-        '--provider comt_vsp --model "qwen/qwen3-vl-235b-a22b-thinking" --comt_sample_id deletion-2371',
-        '--provider comt_vsp --model "qwen/qwen3-vl-30b-a3b-thinking" --comt_sample_id deletion-2371',
-        '--provider comt_vsp --model "qwen/qwen3-vl-8b-thinking" --comt_sample_id deletion-2371',
-        # '--provider comt_vsp --model "mistralai/ministral-14b-2512" --comt_sample_id deletion-2371',
-        # '--provider comt_vsp --model "mistralai/ministral-8b-2512" --comt_sample_id deletion-2371',
-        # '--provider comt_vsp --model "mistralai/ministral-3b-2512" --comt_sample_id deletion-2371',
-        # '--provider comt_vsp --model "openai/gpt-5" --comt_sample_id deletion-2371',
-
+        '--provider openrouter',
+        '--provider comt_vsp --comt_sample_id deletion-0107 --vsp_postproc --vsp_postproc_backend prebaked --vsp_postproc_fallback ask --vsp_postproc_method visual_mask',
     ],
 ]
 
@@ -132,9 +161,11 @@ class RunResult:
     duration: timedelta                     # 耗时
     task_num: Optional[int] = None          # 任务编号
     total_tasks: Optional[int] = None       # 总任务数
+    job_folder: Optional[str] = None        # Job 文件夹路径
     output_file: Optional[str] = None       # 输出文件路径
     eval_file: Optional[str] = None         # 评估结果文件路径
     vsp_dir: Optional[str] = None           # VSP 详细输出目录
+    summary_file: Optional[str] = None      # summary.html 路径
     error_message: Optional[str] = None     # 错误信息
     error_key: Optional[str] = None         # 错误标识（如 "stop_reason" 表示 request.py 内部自动停止）
     
@@ -181,6 +212,16 @@ def parse_output(output: str) -> dict:
     if task_num_match:
         info['task_num'] = int(task_num_match.group(1))
     
+    # 提取 Job 文件夹路径（重命名后的）
+    job_folder_match = re.search(r'✅ Job 文件夹已重命名:\s*(\S+)', output)
+    if job_folder_match:
+        info['job_folder'] = job_folder_match.group(1)
+    else:
+        # 尝试从创建临时文件夹的日志提取
+        temp_folder_match = re.search(r'📁 创建临时 job 文件夹:\s*(\S+)', output)
+        if temp_folder_match:
+            info['job_folder'] = temp_folder_match.group(1)
+    
     # 提取输出文件路径（重命名后的）
     output_file_match = re.search(r'✅ 文件已重命名:\s*(\S+\.jsonl)', output)
     if output_file_match:
@@ -200,6 +241,11 @@ def parse_output(output: str) -> dict:
     eval_file_match = re.search(r'✅ 评估指标已保存:\s*(\S+\.csv)', output)
     if eval_file_match:
         info['eval_file'] = eval_file_match.group(1)
+    
+    # 提取 Summary HTML
+    summary_match = re.search(r'✅ Summary 已保存:\s*(\S+\.html)', output)
+    if summary_match:
+        info['summary_file'] = summary_match.group(1)
     
     # 提取总任务数
     total_tasks_match = re.search(r'总任务数:\s*(\d+)', output)
@@ -346,9 +392,11 @@ def run_request(args_str: str, run_index: int, total_runs: int) -> RunResult:
             duration=duration,
             task_num=output_info.get('task_num'),
             total_tasks=output_info.get('total_tasks'),
+            job_folder=output_info.get('job_folder'),
             output_file=output_info.get('output_file'),
             eval_file=output_info.get('eval_file'),
             vsp_dir=output_info.get('vsp_dir'),
+            summary_file=output_info.get('summary_file'),
             error_message=error_msg or (f"退出码: {process.returncode}" if process.returncode != 0 else None),
             error_key=error_key,
             provider=args_info.get('provider'),
@@ -377,6 +425,191 @@ def run_request(args_str: str, run_index: int, total_runs: int) -> RunResult:
             categories=args_info.get('categories'),
             max_tasks_arg=args_info.get('max_tasks_arg'),
         )
+
+
+def move_job_to_batch(result: RunResult, batch_folder: str) -> RunResult:
+    """
+    将 job 文件夹移动到 batch 文件夹中，并更新 result 中的路径
+    
+    Args:
+        result: 运行结果
+        batch_folder: batch 文件夹路径
+        
+    Returns:
+        更新后的 RunResult
+    """
+    if not result.job_folder or not os.path.exists(result.job_folder):
+        return result
+    
+    job_basename = os.path.basename(result.job_folder)
+    new_job_folder = os.path.join(batch_folder, job_basename)
+    
+    try:
+        shutil.move(result.job_folder, new_job_folder)
+        print(f"📦 已移动 job 文件夹: {result.job_folder} -> {new_job_folder}")
+        
+        # 更新所有路径
+        old_folder = result.job_folder
+        result.job_folder = new_job_folder
+        
+        if result.output_file:
+            result.output_file = result.output_file.replace(old_folder, new_job_folder)
+        if result.eval_file:
+            result.eval_file = result.eval_file.replace(old_folder, new_job_folder)
+        if result.vsp_dir:
+            result.vsp_dir = result.vsp_dir.replace(old_folder, new_job_folder)
+        if result.summary_file:
+            result.summary_file = result.summary_file.replace(old_folder, new_job_folder)
+            
+    except Exception as e:
+        print(f"⚠️  移动 job 文件夹失败: {e}")
+    
+    return result
+
+
+def generate_batch_summary_html(
+    batch_folder: str,
+    batch_num: int,
+    results: List[RunResult],
+    batch_start: datetime,
+    batch_end: datetime,
+    stop_reason: Optional[str] = None
+) -> str:
+    """
+    生成 batch_summary.html
+    
+    Args:
+        batch_folder: batch 文件夹路径
+        batch_num: 批次编号
+        results: 所有运行结果
+        batch_start: 批次开始时间
+        batch_end: 批次结束时间
+        stop_reason: 停止原因（如果有）
+        
+    Returns:
+        生成的 HTML 文件路径
+    """
+    batch_duration = batch_end - batch_start
+    success_count = sum(1 for r in results if r.success)
+    fail_count = len(results) - success_count
+    
+    # 构建 job 列表 HTML
+    jobs_html = ""
+    for r in results:
+        status_class = "success" if r.success else "failed"
+        status_text = "✅ 成功" if r.success else "❌ 失败"
+        
+        # 构建链接（如果有 summary.html）
+        summary_link = ""
+        if r.summary_file and os.path.exists(r.summary_file):
+            rel_path = os.path.basename(r.job_folder) + "/summary.html" if r.job_folder else ""
+            summary_link = f'<a href="{rel_path}" class="summary-link">查看详情</a>'
+        
+        jobs_html += f'''
+        <tr class="{status_class}">
+            <td>{r.run_index}</td>
+            <td>{r.task_num or "N/A"}</td>
+            <td>{r.provider or "N/A"}</td>
+            <td class="model-cell">{r.model or "N/A"}</td>
+            <td>{r.total_tasks or "N/A"}</td>
+            <td>{format_duration(r.duration)}</td>
+            <td><span class="status-badge {status_class}">{status_text}</span></td>
+            <td>{summary_link}</td>
+        </tr>'''
+    
+    html = f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Batch #{batch_num} Summary</title>
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 100%); color: #e0e0e0; min-height: 100vh; padding: 20px; }}
+        .container {{ max-width: 1400px; margin: 0 auto; }}
+        h1 {{ text-align: center; color: #00d9ff; margin-bottom: 10px; font-size: 2.2em; text-shadow: 0 0 20px rgba(0, 217, 255, 0.3); }}
+        .subtitle {{ text-align: center; color: #888; margin-bottom: 30px; font-size: 0.9em; }}
+        .section {{ background: rgba(255, 255, 255, 0.05); border-radius: 15px; padding: 25px; margin-bottom: 25px; border: 1px solid rgba(255, 255, 255, 0.1); }}
+        .section h2 {{ color: #00d9ff; margin-bottom: 20px; font-size: 1.3em; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 10px; }}
+        .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }}
+        .stat-card {{ background: rgba(255, 255, 255, 0.05); border-radius: 12px; padding: 20px; text-align: center; border: 1px solid rgba(255, 255, 255, 0.1); }}
+        .stat-card h3 {{ font-size: 2em; margin-bottom: 5px; color: #ffd93d; }}
+        .stat-card.success h3 {{ color: #00ff88; }}
+        .stat-card.failed h3 {{ color: #ff6b6b; }}
+        .stat-card.duration h3 {{ color: #00d9ff; }}
+        .stat-card p {{ color: #888; font-size: 0.85em; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 15px; }}
+        th, td {{ padding: 12px 15px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }}
+        th {{ background: rgba(0, 0, 0, 0.3); color: #00d9ff; font-weight: 600; }}
+        tr:hover {{ background: rgba(255, 255, 255, 0.05); }}
+        tr.failed {{ background: rgba(255, 107, 107, 0.1); }}
+        .model-cell {{ max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+        .status-badge {{ padding: 4px 10px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }}
+        .status-badge.success {{ background: rgba(0, 255, 136, 0.2); color: #00ff88; }}
+        .status-badge.failed {{ background: rgba(255, 107, 107, 0.2); color: #ff6b6b; }}
+        .summary-link {{ color: #00d9ff; text-decoration: none; }}
+        .summary-link:hover {{ text-decoration: underline; }}
+        .time-info {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
+        .time-info p {{ margin-bottom: 8px; }}
+        .time-info strong {{ color: #00d9ff; }}
+        .stop-reason {{ background: rgba(255, 193, 7, 0.2); color: #ffc107; padding: 10px 15px; border-radius: 8px; margin-top: 15px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Batch #{batch_num} Summary</h1>
+        <p class="subtitle">{os.path.basename(batch_folder)}</p>
+        
+        <div class="section">
+            <h2>Overview</h2>
+            <div class="stats">
+                <div class="stat-card"><h3>{len(results)}</h3><p>Total Runs</p></div>
+                <div class="stat-card success"><h3>{success_count}</h3><p>Successful</p></div>
+                <div class="stat-card failed"><h3>{fail_count}</h3><p>Failed</p></div>
+                <div class="stat-card duration"><h3>{format_duration(batch_duration)}</h3><p>Total Duration</p></div>
+            </div>
+            <div class="time-info">
+                <div>
+                    <p><strong>Start Time:</strong> {batch_start.strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    <p><strong>End Time:</strong> {batch_end.strftime('%Y-%m-%d %H:%M:%S')}</p>
+                </div>
+                <div>
+                    <p><strong>Batch Folder:</strong> {os.path.basename(batch_folder)}</p>
+                </div>
+            </div>
+            {f'<div class="stop-reason">⚠️ Stop Reason: {stop_reason}</div>' if stop_reason else ''}
+        </div>
+        
+        <div class="section">
+            <h2>Job Details</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Job Num</th>
+                        <th>Provider</th>
+                        <th>Model</th>
+                        <th>Tasks</th>
+                        <th>Duration</th>
+                        <th>Status</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {jobs_html}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>'''
+    
+    summary_path = os.path.join(batch_folder, "batch_summary.html")
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    
+    print(f"✅ Batch summary 已生成: {summary_path}")
+    return summary_path
 
 
 def print_results_summary(results: List[RunResult], batch_start: datetime, batch_end: datetime, stop_reason: Optional[str] = None):
@@ -486,23 +719,23 @@ def print_results_summary(results: List[RunResult], batch_start: datetime, batch
     print(f"{'='*100}\n")
 
 
-def generate_batch_report(results: List[RunResult], first_task_num: Optional[int] = None):
+def generate_batch_report(results: List[RunResult], batch_folder: str):
     """
     调用 generate_report_with_charts.py 生成批量结果报告
     
     Args:
         results: 所有运行结果列表
-        first_task_num: 批量运行的第一个任务编号（用于报告文件命名）
+        batch_folder: batch 文件夹路径
     """
     # 收集所有成功的 eval 文件
     eval_files = [r.eval_file for r in results if r.success and r.eval_file]
     
     if not eval_files:
-        print("⚠️  没有找到评估结果文件，跳过报告生成")
+        print("⚠️  没有找到评估结果文件，跳过图表报告生成")
         return
     
     print(f"\n{'='*80}")
-    print(f"📊 生成批量结果报告")
+    print(f"📊 生成批量评估报告（带图表）")
     print(f"{'='*80}")
     print(f"找到 {len(eval_files)} 个评估结果文件:")
     for f in eval_files:
@@ -514,11 +747,8 @@ def generate_batch_report(results: List[RunResult], first_task_num: Optional[int
         env = os.environ.copy()
         env['PYTHONUNBUFFERED'] = '1'
         
-        # 确定输出报告文件名
-        if first_task_num is not None:
-            report_output = f"output/batch_{first_task_num}_evaluation_report.html"
-        else:
-            report_output = "output/evaluation_report.html"
+        # 输出到 batch 文件夹
+        report_output = os.path.join(batch_folder, "evaluation_report.html")
         
         # 构建命令，传递指定的评估文件
         files_arg = ' '.join(f'"{f}"' for f in eval_files)
@@ -542,10 +772,10 @@ def generate_batch_report(results: List[RunResult], first_task_num: Optional[int
         process.wait()
         
         if process.returncode == 0:
-            print(f"\n✅ 报告生成完成")
+            print(f"\n✅ 图表报告生成完成")
             print(f"📄 HTML 报告: {report_output}")
         else:
-            print(f"\n⚠️  报告生成失败，退出码: {process.returncode}")
+            print(f"\n⚠️  图表报告生成失败，退出码: {process.returncode}")
             
     except Exception as e:
         print(f"\n❌ 生成报告时发生错误: {e}")
@@ -554,22 +784,34 @@ def generate_batch_report(results: List[RunResult], first_task_num: Optional[int
 def main():
     """主函数"""
     batch_start = datetime.now()
-    timestamp_str = batch_start.strftime('%Y-%m-%d_%H-%M-%S')
+    timestamp_str = batch_start.strftime('%m%d_%H%M%S')
     
     # 生成所有参数组合
     combinations = generate_combinations(args_combo)
     total_runs = len(combinations)
     
-    # 创建临时日志文件（稍后会重命名）
-    temp_log_path = f"output/batch_temp_{timestamp_str}.log"
-    log_file = setup_logging(temp_log_path)
+    # 确保 output 目录存在
+    os.makedirs("output", exist_ok=True)
+    
+    # 获取批次编号（独立计数，从1开始）
+    batch_num = get_next_batch_num()
+    
+    # 创建 batch 文件夹
+    batch_folder = f"output/batch_{batch_num}_{timestamp_str}"
+    os.makedirs(batch_folder, exist_ok=True)
+    
+    # 创建日志文件（直接放在 batch 文件夹）
+    log_path = os.path.join(batch_folder, "batch.log")
+    log_file = setup_logging(log_path)
     
     try:
         print(f"\n{'='*80}")
         print(f"🔧 批量运行 request.py")
         print(f"{'='*80}")
+        print(f"批次编号: {batch_num}")
         print(f"开始时间: {batch_start.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"总运行次数: {total_runs}")
+        print(f"Batch 文件夹: {batch_folder}")
         print(f"{'='*80}\n")
         
         # 显示所有组合
@@ -581,8 +823,13 @@ def main():
         # 运行每个组合
         results: List[RunResult] = []
         stop_reason: Optional[str] = None
+        
         for i, args_str in enumerate(combinations, 1):
             result = run_request(args_str, i, total_runs)
+            
+            # 将 job 文件夹移动到 batch 文件夹
+            result = move_job_to_batch(result, batch_folder)
+            
             results.append(result)
         
         # 记录结束时间
@@ -591,31 +838,24 @@ def main():
         # 打印详细汇总
         print_results_summary(results, batch_start, batch_end, stop_reason)
         
-        # 获取第一个成功任务的 task_num（用于日志文件和报告命名）
-        first_task_num = None
-        for r in results:
-            if r.task_num is not None:
-                first_task_num = r.task_num
-                break
+        # 生成 batch_summary.html
+        generate_batch_summary_html(batch_folder, batch_num, results, batch_start, batch_end, stop_reason)
         
-        # 生成批量结果报告
+        # 生成批量结果报告（带图表的 evaluation_report.html）
         if GENERATE_REPORT:
-            generate_batch_report(results, first_task_num)
+            generate_batch_report(results, batch_folder)
         
         # 关闭日志文件
         close_logging()
         
-        # 重命名日志文件为最终名称
-        if first_task_num is not None:
-            final_log_name = f"batch-{first_task_num}_{total_runs}_{timestamp_str}.log"
-        else:
-            final_log_name = f"batch-0_{total_runs}_{timestamp_str}.log"
-        
-        final_log_path = f"output/{final_log_name}"
-        
-        if os.path.exists(temp_log_path):
-            os.rename(temp_log_path, final_log_path)
-            print(f"\n📝 日志已保存: {final_log_path}")
+        # 打印最终信息
+        print(f"\n{'='*80}")
+        print(f"🎉 批量运行完成！")
+        print(f"{'='*80}")
+        print(f"📁 Batch 文件夹: {batch_folder}")
+        print(f"📊 Summary: {os.path.join(batch_folder, 'batch_summary.html')}")
+        print(f"📝 日志: {log_path}")
+        print(f"{'='*80}\n")
         
         # 返回退出码
         fail_count = sum(1 for r in results if not r.success)
