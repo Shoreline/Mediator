@@ -26,13 +26,14 @@ python request.py --provider vsp --max_tasks 10
 | `--vsp_postproc_backend` | Choose backend | `ask` (default), `sd` (future) |
 | `--vsp_postproc_method` | Choose method | `visual_mask`, `visual_edit`, `zoom_in` |
 
-## Methods Comparison
+## Backends Comparison
 
-| Method | Effect | Use Case | Speed |
-|--------|--------|----------|-------|
-| `visual_mask` | Black rectangles | Testing detection | ⚡ Very fast |
-| `visual_edit` | Inpainting (remove) | Content-aware removal | ⚡ Fast |
-| `zoom_in` | Crop and zoom | Focus on object | ⚡ Very fast |
+| Backend | Method | Effect | Speed | Cost | Quality |
+|---------|--------|--------|-------|------|---------|
+| **ask** | `visual_mask` | Black rectangles | ⚡ Very fast | Free | Basic |
+| **ask** | `visual_edit` | OpenCV inpainting | ⚡ Fast | Free | Good |
+| **ask** | `zoom_in` | Crop and zoom | ⚡ Very fast | Free | N/A |
+| **sd** | `inpaint` | AI-powered removal | 🐢 Slow (10-30s) | ~$0.05/img | 🎨 Excellent |
 
 ## Works With
 
@@ -60,6 +61,15 @@ python request.py --provider comt_vsp --comt_sample_id "creation-10003" --max_ta
 ### Specific categories
 ```bash
 python request.py --provider vsp --categories "01-Illegal_Activity" --max_tasks 20 --vsp_postproc --vsp_postproc_method visual_edit
+```
+
+### With Stable Diffusion (Replicate)
+```bash
+# Requires REPLICATE_API_TOKEN in environment
+python request.py --provider comt_vsp --comt_sample_id "deletion-0107" --max_tasks 1 --vsp_postproc --vsp_postproc_backend sd
+
+# With custom prompt
+python request.py --provider vsp --max_tasks 5 --vsp_postproc --vsp_postproc_backend sd --vsp_postproc_sd_prompt "remove detected objects, natural lighting"
 ```
 
 ## Verify It Works
@@ -91,3 +101,4 @@ This allows you to compare:
 
 - `VSP_POSTPROCESSOR_USAGE.md` - Detailed usage guide
 - `VSP_POSTPROCESSOR_INTEGRATION_SUMMARY.md` - Implementation details
+- `VSP_SD_POSTPROCESSOR_GUIDE.md` - Stable Diffusion guide

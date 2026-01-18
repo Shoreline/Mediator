@@ -524,7 +524,7 @@ def format_time(seconds: float) -> str:
         minutes = int((seconds % 3600) // 60)
         return f"{hours}h{minutes}m"
 
-def generate_metadata_yaml(
+def generate_job_summary(
     job_folder: str,
     task_num: int,
     command: List[str],
@@ -537,7 +537,7 @@ def generate_metadata_yaml(
     stop_reason: str = None
 ):
     """
-    生成 job 的 metadata.yaml 文件
+    生成 job 的 summary.html 文件，整合所有元数据和报告
     
     Args:
         job_folder: Job 文件夹路径
@@ -552,40 +552,18 @@ def generate_metadata_yaml(
         stop_reason: 停止原因（如果有）
     """
     import csv
+    import base64
+    from io import BytesIO
     
-    # 提取时间戳（从 job_folder 名称）
+    # 提取时间戳
     timestamp_match = re.search(r'_(\d{4}_\d{6})$', job_folder)
     if timestamp_match:
         ts_str = timestamp_match.group(1)
-        # 格式：MMDD_HHMMSS -> MM-DD HH:MM:SS
-        timestamp_readable = f"{ts_str[0:2]}-{ts_str[2:4]} {ts_str[5:7]}:{ts_str[7:9]}:{ts_str[9:11]}"
+        timestamp_readable = f"2026-{ts_str[0:2]}-{ts_str[2:4]} {ts_str[5:7]}:{ts_str[7:9]}:{ts_str[9:11]}"
     else:
-        timestamp_readable = datetime.now().strftime("%m-%d %H:%M:%S")
+        timestamp_readable = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # 构建 metadata 字典
-    metadata = {
-        'job_num': task_num,
-        'job_folder': os.path.basename(job_folder),
-        'timestamp': timestamp_readable,
-        'command': ' '.join(command),
-        'config': {
-            'provider': cfg.provider,
-            'model': cfg.model,
-            'temperature': cfg.temperature,
-            'top_p': cfg.top_p,
-            'max_tokens': cfg.max_tokens,
-        }
-    }
-    
-    # 添加可选配置
-    if cfg.seed is not None:
-        metadata['config']['seed'] = cfg.seed
-    metadata['config']['consumer_size'] = cfg.consumer_size
-    if cfg.sampling_rate < 1.0:
-        metadata['config']['sampling_rate'] = cfg.sampling_rate
-        metadata['config']['sampling_seed'] = cfg.sampling_seed
-    
-    # 执行信息
+    # 计算总耗时
     total_duration = request_duration
     if eval_duration:
         total_duration += eval_duration
@@ -594,130 +572,287 @@ def generate_metadata_yaml(
     if clean_duration:
         total_duration += clean_duration
     
-    metadata['execution'] = {
-        'total_tasks': total_tasks,
-        'request_duration_seconds': round(request_duration, 2),
-        'total_duration_seconds': round(total_duration, 2),
-        'throughput_tasks_per_second': round(total_tasks / request_duration, 3) if request_duration > 0 else 0,
-    }
-    
-    if eval_duration is not None:
-        metadata['execution']['eval_duration_seconds'] = round(eval_duration, 2)
-    if vsp_duration is not None:
-        metadata['execution']['vsp_tool_check_duration_seconds'] = round(vsp_duration, 2)
-    if clean_duration is not None:
-        metadata['execution']['path_clean_duration_seconds'] = round(clean_duration, 2)
-    if stop_reason:
-        metadata['execution']['stop_reason'] = stop_reason
-    else:
-        metadata['execution']['stop_reason'] = None
-    
-    # 文件信息
-    metadata['files'] = {
-        'jsonl': 'results.jsonl',
-        'console_log': 'console.log',
-    }
-    
-    # 检查是否有 eval.csv
+    # 解析 eval.csv 提取指标
+    eval_metrics = None
     csv_path = os.path.join(job_folder, 'eval.csv')
     if os.path.exists(csv_path):
-        metadata['files']['eval_csv'] = 'eval.csv'
-        
-        # 解析 eval.csv 提取指标
         try:
-            eval_metrics = {'by_category': {}}
+            eval_metrics = {'by_category': {}, 'overall': {}}
             with open(csv_path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
-                total_evaluated = 0
-                total_safe = 0
-                total_unsafe = 0
-                total_count = 0
-                
+                total_evaluated = total_safe = total_unsafe = total_count = 0
                 for row in reader:
                     category = row.get('Category', 'Unknown')
                     evaluated = int(row.get('Evaluated', 0))
                     safe = int(row.get('Safe', 0))
                     unsafe = int(row.get('Unsafe', 0))
                     total = int(row.get('Total', 0))
-                    attack_rate_str = row.get('Attack_Rate(%)', '0')
-                    
-                    # 解析攻击率
                     try:
-                        attack_rate = float(attack_rate_str)
+                        attack_rate = float(row.get('Attack_Rate(%)', '0'))
                     except ValueError:
                         attack_rate = 0.0
-                    
                     eval_metrics['by_category'][category] = {
-                        'total': total,
-                        'evaluated': evaluated,
-                        'safe': safe,
-                        'unsafe': unsafe,
-                        'attack_rate': round(attack_rate, 2)
+                        'total': total, 'evaluated': evaluated,
+                        'safe': safe, 'unsafe': unsafe, 'attack_rate': round(attack_rate, 2)
                     }
-                    
                     total_evaluated += evaluated
                     total_safe += safe
                     total_unsafe += unsafe
                     total_count += total
-                
-                # 计算总体指标
-                if total_evaluated > 0:
-                    overall_attack_rate = (total_unsafe / total_evaluated) * 100
-                else:
-                    overall_attack_rate = 0.0
-                
+                overall_attack_rate = (total_unsafe / total_evaluated * 100) if total_evaluated > 0 else 0.0
                 eval_metrics['overall'] = {
-                    'total': total_count,
-                    'evaluated': total_evaluated,
-                    'safe': total_safe,
-                    'unsafe': total_unsafe,
-                    'attack_rate': round(overall_attack_rate, 2)
+                    'total': total_count, 'evaluated': total_evaluated,
+                    'safe': total_safe, 'unsafe': total_unsafe, 'attack_rate': round(overall_attack_rate, 2)
                 }
-            
-            metadata['eval_metrics'] = eval_metrics
         except Exception as e:
-            # 如果解析失败，只记录文件存在
             print(f"⚠️  解析 eval.csv 失败: {e}")
+            eval_metrics = None
     
-    # 检查是否有 details 目录
-    details_dir = os.path.join(job_folder, 'details')
-    if os.path.exists(details_dir):
-        metadata['files']['details'] = 'details/'
+    # 加载 prebaked report 数据（如果存在）
+    prebaked_data = None
+    prebaked_json_path = os.path.join(job_folder, 'prebaked_report_data.json')
+    if os.path.exists(prebaked_json_path):
+        try:
+            with open(prebaked_json_path, 'r', encoding='utf-8') as f:
+                prebaked_data = json.load(f)
+        except Exception as e:
+            print(f"⚠️  加载 prebaked report 数据失败: {e}")
     
-    # 写入 YAML 文件
-    yaml_path = os.path.join(job_folder, 'metadata.yaml')
-    with open(yaml_path, 'w', encoding='utf-8') as f:
-        # 手动写入 YAML（避免依赖 PyYAML）
-        def write_yaml_dict(d, indent=0):
-            for key, value in d.items():
-                if isinstance(value, dict):
-                    f.write(f"{' ' * indent}{key}:\n")
-                    write_yaml_dict(value, indent + 2)
-                elif isinstance(value, list):
-                    f.write(f"{' ' * indent}{key}:\n")
-                    for item in value:
-                        f.write(f"{' ' * (indent + 2)}- {item}\n")
-                elif value is None:
-                    f.write(f"{' ' * indent}{key}: null\n")
-                elif isinstance(value, str):
-                    # 处理包含特殊字符的字符串
-                    if ':' in value or '#' in value or value.startswith('-'):
-                        f.write(f"{' ' * indent}{key}: \"{value}\"\n")
-                    else:
-                        f.write(f"{' ' * indent}{key}: {value}\n")
-                else:
-                    f.write(f"{' ' * indent}{key}: {value}\n")
-        
-        write_yaml_dict(metadata)
+    # 生成 HTML
+    html = _generate_summary_html(
+        job_num=task_num,
+        job_folder=os.path.basename(job_folder),
+        timestamp=timestamp_readable,
+        command=' '.join(command),
+        cfg=cfg,
+        total_tasks=total_tasks,
+        request_duration=request_duration,
+        eval_duration=eval_duration,
+        vsp_duration=vsp_duration,
+        clean_duration=clean_duration,
+        total_duration=total_duration,
+        stop_reason=stop_reason,
+        eval_metrics=eval_metrics,
+        prebaked_data=prebaked_data
+    )
     
-    print(f"✅ Metadata 已保存: {yaml_path}")
+    # 写入 HTML 文件
+    html_path = os.path.join(job_folder, 'summary.html')
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    
+    # 删除旧的 prebaked_report.html（已合并到 summary.html）
+    old_prebaked_report = os.path.join(job_folder, 'prebaked_report.html')
+    if os.path.exists(old_prebaked_report):
+        os.remove(old_prebaked_report)
+    
+    print(f"✅ Summary 已保存: {html_path}")
 
-def clean_vsp_paths(vsp_output_dir: str) -> Dict[str, int]:
+
+def _generate_summary_html(
+    job_num, job_folder, timestamp, command, cfg, total_tasks,
+    request_duration, eval_duration, vsp_duration, clean_duration, total_duration,
+    stop_reason, eval_metrics, prebaked_data
+):
+    """生成完整的 summary.html 内容"""
+    import base64
+    from io import BytesIO
+    
+    # 构建评估指标 HTML
+    eval_html = ""
+    if eval_metrics and eval_metrics.get('overall'):
+        overall = eval_metrics['overall']
+        eval_html = f'''
+        <div class="section">
+            <h2>Evaluation Metrics</h2>
+            <div class="stats">
+                <div class="stat-card"><h3>{overall['evaluated']}</h3><p>Evaluated</p></div>
+                <div class="stat-card safe"><h3>{overall['safe']}</h3><p>Safe</p></div>
+                <div class="stat-card unsafe"><h3>{overall['unsafe']}</h3><p>Unsafe</p></div>
+                <div class="stat-card rate"><h3>{overall['attack_rate']:.1f}%</h3><p>Attack Rate</p></div>
+            </div>
+        </div>'''
+    
+    # 构建 Prebaked 报告 HTML
+    prebaked_html = ""
+    if prebaked_data and len(prebaked_data) > 0:
+        cache_hits = sum(1 for r in prebaked_data if r.get("cache_hit"))
+        cache_misses = len(prebaked_data) - cache_hits
+        hit_rate = (cache_hits / len(prebaked_data) * 100) if prebaked_data else 0
+        
+        # 按 cache_path 分组统计
+        from collections import defaultdict
+        grouped = defaultdict(lambda: {"count": 0, "entry": None})
+        for entry in prebaked_data:
+            cache_path = entry.get("cache_path", "")
+            if grouped[cache_path]["entry"] is None:
+                grouped[cache_path]["entry"] = entry
+            grouped[cache_path]["count"] += 1
+        
+        entries_html = ""
+        for cache_path, data in grouped.items():
+            entry = data["entry"]
+            hit_count = data["count"]
+            status_class = "hit" if entry.get("cache_hit") else "miss"
+            status_text = "Cache HIT" if entry.get("cache_hit") else "Generated"
+            
+            # 展开 ~ 路径以便加载图片
+            expanded_path = os.path.expanduser(cache_path) if cache_path else ""
+            img_html = '<span class="no-image">No image</span>'
+            if expanded_path and os.path.exists(expanded_path):
+                try:
+                    from PIL import Image
+                    with Image.open(expanded_path) as img:
+                        img.thumbnail((200, 200))
+                        buffer = BytesIO()
+                        img.save(buffer, format="PNG")
+                        img_b64 = base64.b64encode(buffer.getvalue()).decode()
+                        img_html = f'<img src="data:image/png;base64,{img_b64}" class="thumbnail">'
+                except Exception:
+                    pass
+            
+            # 显示路径（保留清理后的 ~ 格式）
+            display_path = cache_path.replace(os.path.expanduser("~"), "~") if cache_path else "N/A"
+            
+            entries_html += f'''
+            <div class="prebaked-entry">
+                <div class="entry-header">
+                    <span class="status {status_class}">{status_text}</span>
+                    <span class="hit-count">× {hit_count}</span>
+                    <span class="tool">{entry.get("tool_name", "unknown")}</span>
+                </div>
+                <div class="entry-content">
+                    <div class="image-container">{img_html}</div>
+                    <div class="details">
+                        <p><strong>Category:</strong> {entry.get("category", "N/A")}</p>
+                        <p><strong>CoMT ID:</strong> {entry.get("comt_sample_id", "N/A")}</p>
+                        <p><strong>Backend:</strong> {entry.get("fallback_backend", "")}:{entry.get("fallback_method", "")}</p>
+                        <p class="path"><strong>Path:</strong> <code>{display_path}</code></p>
+                    </div>
+                </div>
+            </div>'''
+        
+        prebaked_html = f'''
+        <div class="section">
+            <h2>Prebaked Processor Report</h2>
+            <div class="stats">
+                <div class="stat-card"><h3>{len(prebaked_data)}</h3><p>Total Calls</p></div>
+                <div class="stat-card hits"><h3>{cache_hits}</h3><p>Cache Hits</p></div>
+                <div class="stat-card misses"><h3>{cache_misses}</h3><p>Generated</p></div>
+                <div class="stat-card rate"><h3>{hit_rate:.1f}%</h3><p>Hit Rate</p></div>
+            </div>
+            <div class="prebaked-entries">{entries_html}</div>
+        </div>'''
+    
+    # 构建配置信息
+    config_items = f'''
+        <p><strong>Provider:</strong> {cfg.provider}</p>
+        <p><strong>Model:</strong> {cfg.model}</p>
+        <p><strong>Temperature:</strong> {cfg.temperature}</p>
+        <p><strong>Top P:</strong> {cfg.top_p}</p>
+        <p><strong>Max Tokens:</strong> {cfg.max_tokens}</p>'''
+    if cfg.seed is not None:
+        config_items += f'<p><strong>Seed:</strong> {cfg.seed}</p>'
+    if cfg.sampling_rate < 1.0:
+        config_items += f'<p><strong>Sampling Rate:</strong> {cfg.sampling_rate}</p>'
+    if cfg.provider in ["vsp", "comt_vsp"] and cfg.vsp_postproc_enabled:
+        config_items += f'<p><strong>Post-Processor:</strong> {cfg.vsp_postproc_backend}'
+        if cfg.vsp_postproc_method:
+            config_items += f' ({cfg.vsp_postproc_method})'
+        config_items += '</p>'
+    
+    # 构建执行时间
+    duration_items = f'<p><strong>Request:</strong> {request_duration:.2f}s</p>'
+    if eval_duration is not None:
+        duration_items += f'<p><strong>Evaluation:</strong> {eval_duration:.2f}s</p>'
+    if vsp_duration is not None:
+        duration_items += f'<p><strong>VSP Tool Check:</strong> {vsp_duration:.2f}s</p>'
+    if clean_duration is not None:
+        duration_items += f'<p><strong>Path Cleanup:</strong> {clean_duration:.2f}s</p>'
+    duration_items += f'<p><strong>Total:</strong> {total_duration:.2f}s</p>'
+    
+    return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job {job_num} Summary</title>
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #e0e0e0; min-height: 100vh; padding: 20px; }}
+        .container {{ max-width: 1200px; margin: 0 auto; }}
+        h1 {{ text-align: center; color: #00d9ff; margin-bottom: 10px; font-size: 2.2em; text-shadow: 0 0 20px rgba(0, 217, 255, 0.3); }}
+        .subtitle {{ text-align: center; color: #888; margin-bottom: 30px; font-size: 0.9em; }}
+        .section {{ background: rgba(255, 255, 255, 0.05); border-radius: 15px; padding: 25px; margin-bottom: 25px; border: 1px solid rgba(255, 255, 255, 0.1); }}
+        .section h2 {{ color: #00d9ff; margin-bottom: 20px; font-size: 1.3em; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 10px; }}
+        .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
+        .grid-item p {{ margin-bottom: 8px; line-height: 1.6; }}
+        .grid-item strong {{ color: #00d9ff; }}
+        .command {{ background: rgba(0, 0, 0, 0.3); padding: 15px; border-radius: 8px; font-family: 'Fira Code', monospace; font-size: 0.85em; word-break: break-all; margin-top: 15px; }}
+        .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }}
+        .stat-card {{ background: rgba(255, 255, 255, 0.05); border-radius: 12px; padding: 20px; text-align: center; border: 1px solid rgba(255, 255, 255, 0.1); }}
+        .stat-card h3 {{ font-size: 2em; margin-bottom: 5px; color: #ffd93d; }}
+        .stat-card.safe h3 {{ color: #00ff88; }}
+        .stat-card.unsafe h3 {{ color: #ff6b6b; }}
+        .stat-card.hits h3 {{ color: #00ff88; }}
+        .stat-card.misses h3 {{ color: #ff6b6b; }}
+        .stat-card.rate h3 {{ color: #00d9ff; }}
+        .stat-card p {{ color: #888; font-size: 0.85em; }}
+        .prebaked-entries {{ margin-top: 20px; }}
+        .prebaked-entry {{ background: rgba(0, 0, 0, 0.2); border-radius: 10px; margin-bottom: 15px; overflow: hidden; }}
+        .entry-header {{ padding: 12px 15px; background: rgba(0, 0, 0, 0.2); display: flex; justify-content: space-between; align-items: center; }}
+        .status {{ padding: 4px 12px; border-radius: 15px; font-weight: bold; font-size: 0.8em; }}
+        .status.hit {{ background: rgba(0, 255, 136, 0.2); color: #00ff88; }}
+        .status.miss {{ background: rgba(255, 107, 107, 0.2); color: #ff6b6b; }}
+        .tool {{ color: #888; font-size: 0.85em; }}
+        .hit-count {{ color: #ffd93d; font-weight: bold; font-size: 0.9em; margin-left: 10px; }}
+        .entry-content {{ padding: 15px; display: flex; gap: 15px; }}
+        .image-container {{ flex: 0 0 200px; }}
+        .thumbnail {{ max-width: 100%; border-radius: 8px; }}
+        .no-image {{ display: block; padding: 40px; text-align: center; background: rgba(0, 0, 0, 0.2); border-radius: 8px; color: #666; }}
+        .details {{ flex: 1; }}
+        .details p {{ margin-bottom: 6px; font-size: 0.9em; }}
+        .details .path {{ margin-top: 10px; }}
+        .details .path code {{ background: rgba(0, 0, 0, 0.3); padding: 2px 6px; border-radius: 4px; font-family: 'Fira Code', monospace; font-size: 0.8em; word-break: break-all; }}
+        .stop-reason {{ background: rgba(255, 107, 107, 0.2); color: #ff6b6b; padding: 10px 15px; border-radius: 8px; margin-top: 15px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Job #{job_num} Summary</h1>
+        <p class="subtitle">{job_folder}</p>
+        <div class="section">
+            <h2>Overview</h2>
+            <div class="grid">
+                <div class="grid-item">
+                    <p><strong>Timestamp:</strong> {timestamp}</p>
+                    <p><strong>Total Tasks:</strong> {total_tasks}</p>
+                    <p><strong>Throughput:</strong> {total_tasks / request_duration:.3f} tasks/s</p>
+                    {f'<div class="stop-reason">Stop Reason: {stop_reason}</div>' if stop_reason else ''}
+                </div>
+                <div class="grid-item">{duration_items}</div>
+            </div>
+        </div>
+        <div class="section">
+            <h2>Configuration</h2>
+            <div class="grid">
+                <div class="grid-item">{config_items}</div>
+                <div class="grid-item"><p><strong>Consumers:</strong> {cfg.consumer_size}</p></div>
+            </div>
+            <div class="command">{command}</div>
+        </div>
+        {eval_html}
+        {prebaked_html}
+    </div>
+</body>
+</html>'''
+
+def clean_sensitive_paths(output_dir: str) -> Dict[str, int]:
     """
-    清理 VSP 输出目录中的绝对路径，将主目录路径替换为 ~
+    清理输出目录中的绝对路径，将主目录路径替换为 ~
     
     Args:
-        vsp_output_dir: VSP 输出目录路径
+        output_dir: 输出目录路径
         
     Returns:
         统计信息字典：{'files_processed': int, 'files_modified': int, 'replacements': int}
@@ -725,13 +860,14 @@ def clean_vsp_paths(vsp_output_dir: str) -> Dict[str, int]:
     home = os.path.expanduser("~")
     stats = {'files_processed': 0, 'files_modified': 0, 'replacements': 0}
     
-    if not os.path.exists(vsp_output_dir):
+    if not os.path.exists(output_dir):
         return stats
     
-    # 递归处理所有 .json 和 .log 文件
-    for root, dirs, files in os.walk(vsp_output_dir):
+    # 递归处理所有文本文件（.json, .log, .html, .jsonl, .csv, .txt, .yaml, .md）
+    text_extensions = ('.json', '.log', '.html', '.jsonl', '.csv', '.txt', '.yaml', '.md')
+    for root, dirs, files in os.walk(output_dir):
         for filename in files:
-            if not (filename.endswith('.json') or filename.endswith('.log')):
+            if not filename.endswith(text_extensions):
                 continue
             
             file_path = os.path.join(root, filename)
@@ -1300,29 +1436,23 @@ if __name__ == "__main__":
             print(f"\n✅ VSP 工具检测完成")
             print(f"   耗时: {format_time(vsp_duration)}\n")
             
-            # 清理 VSP 输出中的绝对路径
+            # 清理输出中的绝对路径（包括所有文本文件）
             print(f"{'='*80}")
-            print(f"🧹 清理 VSP 输出中的敏感路径")
+            print(f"🧹 清理输出中的敏感路径")
             print(f"{'='*80}\n")
             
             clean_start = time.time()
             
-            # VSP 详细输出在 job 文件夹的 details 子目录
-            if final_job_folder:
-                vsp_batch_dir = os.path.join(final_job_folder, "details")
-            else:
-                vsp_batch_dir = None
-            
-            # 清理整个批次的输出目录
-            if vsp_batch_dir:
-                clean_stats = clean_vsp_paths(vsp_batch_dir)
+            # 清理整个 job 文件夹中的所有文本文件
+            if final_job_folder and os.path.exists(final_job_folder):
+                clean_stats = clean_sensitive_paths(final_job_folder)
                 
-                print(f"📁 清理目录: {vsp_batch_dir}")
+                print(f"📁 清理目录: {final_job_folder}")
                 print(f"   处理文件: {clean_stats['files_processed']} 个")
                 print(f"   修改文件: {clean_stats['files_modified']} 个")
                 print(f"   替换路径: {clean_stats['replacements']} 处")
             else:
-                print("⚠️  未找到 VSP 批次时间戳，跳过清理")
+                print("⚠️  未找到 job 文件夹，跳过清理")
             
             clean_duration = time.time() - clean_start
             
@@ -1364,27 +1494,21 @@ if __name__ == "__main__":
         # 即使跳过评估，也要清理 VSP 路径
         if cfg.provider in ["vsp", "comt_vsp"]:
             print(f"\n{'='*80}")
-            print(f"🧹 清理 VSP 输出中的敏感路径")
+            print(f"🧹 清理输出中的敏感路径")
             print(f"{'='*80}\n")
             
             clean_start = time.time()
             
-            # VSP 详细输出在 job 文件夹的 details 子目录
-            if final_job_folder:
-                vsp_batch_dir = os.path.join(final_job_folder, "details")
-            else:
-                vsp_batch_dir = None
-            
-            # 清理整个批次的输出目录
-            if vsp_batch_dir:
-                clean_stats = clean_vsp_paths(vsp_batch_dir)
+            # 清理整个 job 文件夹中的所有文本文件
+            if final_job_folder and os.path.exists(final_job_folder):
+                clean_stats = clean_sensitive_paths(final_job_folder)
                 
-                print(f"📁 清理目录: {vsp_batch_dir}")
+                print(f"📁 清理目录: {final_job_folder}")
                 print(f"   处理文件: {clean_stats['files_processed']} 个")
                 print(f"   修改文件: {clean_stats['files_modified']} 个")
                 print(f"   替换路径: {clean_stats['replacements']} 处")
             else:
-                print("⚠️  未找到 VSP 批次时间戳，跳过清理")
+                print("⚠️  未找到 job 文件夹，跳过清理")
             
             clean_duration = time.time() - clean_start
             
@@ -1398,13 +1522,13 @@ if __name__ == "__main__":
         sys.stdout = console_logger.terminal
         console_logger.close()
         print(f"📝 控制台日志已保存: {console_log_path}")    
-    # 生成 metadata.yaml
+    # 生成 summary.html
     if auto_generated_save_path and final_job_folder and task_num is not None:
         print(f"\n{'='*80}")
-        print(f"📄 生成 Job Metadata")
+        print(f"📄 生成 Job Summary")
         print(f"{'='*80}\n")
         
-        generate_metadata_yaml(
+        generate_job_summary(
             job_folder=final_job_folder,
             task_num=task_num,
             command=sys.argv,

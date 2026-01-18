@@ -265,7 +265,11 @@ class VSPProvider(BaseProvider):
             # Prebaked processor 配置
             if hasattr(cfg, 'vsp_postproc_fallback'):
                 env["VSP_POSTPROC_FALLBACK"] = cfg.vsp_postproc_fallback
-            env["VSP_JOB_FOLDER"] = getattr(cfg, 'job_folder', "") or ""
+            # 必须使用绝对路径，因为 VSP 子进程的工作目录不同
+            job_folder = getattr(cfg, 'job_folder', "") or ""
+            if job_folder:
+                job_folder = os.path.abspath(job_folder)
+            env["VSP_JOB_FOLDER"] = job_folder
         
         # 传递 prebaked processor 需要的上下文信息
         if meta:
