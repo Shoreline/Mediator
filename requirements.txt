@@ -7,3 +7,6 @@ aiohttp>=3.9.0
 # Rate limiting (optional, for advanced rate control)
 aiolimiter>=1.1.0
 
+# Environment variables management
+python-dotenv>=1.0.0
+

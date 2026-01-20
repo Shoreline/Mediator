@@ -10,6 +10,10 @@ from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 from pathlib import Path
 
+# Load environment variables from .env file (searches current and parent directories)
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv(usecwd=True))
+
 # ============ Provider 接口与实现 ============
 
 class BaseProvider:
